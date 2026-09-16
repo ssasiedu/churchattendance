@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Young Serif", Georgia, "Times New Roman", serif;
+
+  /* Liturgical green */
+  --color-pew-50: #eef5f2;
+  --color-pew-100: #d6e8e0;
+  --color-pew-200: #aed1c2;
+  --color-pew-500: #3f7a69;
+  --color-pew-600: #2f5d50;
+  --color-pew-700: #254a40;
+  --color-pew-900: #15302a;
+
+  /* Brass */
+  --color-brass-100: #f6ecd4;
+  --color-brass-300: #e3c27a;
+  --color-brass-500: #c8962e;
+  --color-brass-700: #8a6418;
+
+  /* Ink + paper */
+  --color-ink: #1f2a44;
+  --color-paper: #f5f7f9;
+
+  --color-absent: #b4463c;
+}
+
+html, body, #root { min-height: 100%; }
+body {
+  @apply bg-paper text-ink font-sans antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brass-500);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+@keyframes pop-in {
+  from { transform: scale(0.96); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+.animate-pop { animation: pop-in 160ms ease-out; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+  .print-break { break-inside: avoid; }
+}
