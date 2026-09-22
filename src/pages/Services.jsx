@@ -3,27 +3,24 @@ import { Link } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import { Plus, QrCode, FileText, Lock, Unlock, Trash2, Copy, Printer, Check } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { CHURCH_NAME, SERVICE_TYPES } from '../lib/constants'
+import { useSettings } from '../context/SettingsContext'
 import { formatDate, toISODate } from '../lib/utils'
-import { Badge, Button, ErrorNote, Field, PageHeader, Panel, Spinner, inputClass } from '../components/ui'
+import { Badge, Button, Empty, ErrorNote, Field, PageHeader, Select, Spinner, inputClass } from '../components/ui'
 import Modal from '../components/Modal'
 
 export default function Services() {
+  const { lookup } = useSettings()
   const [services, setServices] = useState([])
   const [counts, setCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [creating, setCreating] = useState(false)
-  const [qrFor, setQrFor] = useState(null) // service object or 'permanent'
+  const [qrFor, setQrFor] = useState(null)
 
   async function load() {
-    setError(null)
     const { data, error } = await supabase
-      .from('services')
-      .select('*, attendance(count)')
-      .order('service_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(60)
+      .from('services').select('*, attendance(count)')
+      .order('service_date', { ascending: false }).order('created_at', { ascending: false }).limit(80)
     if (error) setError(error)
     else {
       setServices(data)
@@ -32,9 +29,7 @@ export default function Services() {
     setLoading(false)
   }
 
-  useEffect(() => {
-    load()
-  }, [])
+  useEffect(() => { load() }, [])
 
   async function toggleOpen(s) {
     const { error } = await supabase.from('services').update({ is_open: !s.is_open }).eq('id', s.id)
@@ -43,7 +38,7 @@ export default function Services() {
   }
 
   async function remove(s) {
-    if (!confirm(`Delete "${s.title}" on ${formatDate(s.service_date)}? Its attendance records will be deleted too.`)) return
+    if (!confirm(`Delete "${s.title}" on ${formatDate(s.service_date)}? Its attendance records will go too.`)) return
     const { error } = await supabase.from('services').delete().eq('id', s.id)
     if (error) setError(error)
     else setServices((list) => list.filter((x) => x.id !== s.id))
@@ -56,29 +51,17 @@ export default function Services() {
         subtitle="Open a service to let members check in, then close it when the service ends."
         actions={
           <>
-            <Button variant="outline" onClick={() => setQrFor('permanent')}>
-              <QrCode className="size-4" /> Entrance QR code
-            </Button>
-            <Button onClick={() => setCreating(true)}>
-              <Plus className="size-4" /> New service
-            </Button>
+            <Button variant="outline" onClick={() => setQrFor('permanent')}><QrCode className="size-4" /> Entrance QR code</Button>
+            <Button onClick={() => setCreating(true)}><Plus className="size-4" /> New service</Button>
           </>
         }
       />
       <ErrorNote error={error} />
 
-      {loading ? (
-        <Spinner />
-      ) : services.length === 0 ? (
-        <Panel>
-          <div className="py-10 text-center">
-            <p className="font-display text-xl">No services yet</p>
-            <p className="mt-1 text-slate-600">Create today’s service to generate a check-in QR code.</p>
-            <Button className="mt-5" onClick={() => setCreating(true)}>
-              <Plus className="size-4" /> New service
-            </Button>
-          </div>
-        </Panel>
+      {loading ? <Spinner /> : services.length === 0 ? (
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <Empty title="No services yet">Create today’s service to generate a check-in QR code.</Empty>
+        </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <ul className="divide-y divide-slate-100">
@@ -97,23 +80,12 @@ export default function Services() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {s.is_open && (
-                    <Button size="sm" variant="brass" onClick={() => setQrFor(s)}>
-                      <QrCode className="size-4" /> QR code
-                    </Button>
-                  )}
+                  {s.is_open && <Button size="sm" variant="brass" onClick={() => setQrFor(s)}><QrCode className="size-4" /> QR code</Button>}
                   <Button size="sm" variant="outline" onClick={() => toggleOpen(s)}>
-                    {s.is_open ? <Lock className="size-4" /> : <Unlock className="size-4" />}
-                    {s.is_open ? 'Close' : 'Reopen'}
+                    {s.is_open ? <Lock className="size-4" /> : <Unlock className="size-4" />}{s.is_open ? 'Close' : 'Reopen'}
                   </Button>
-                  <Link to={`/reports/${s.id}`}>
-                    <Button size="sm" variant="outline">
-                      <FileText className="size-4" /> Report
-                    </Button>
-                  </Link>
-                  <Button size="sm" variant="ghost" onClick={() => remove(s)} aria-label="Delete service">
-                    <Trash2 className="size-4 text-absent" />
-                  </Button>
+                  <Link to={`/reports/${s.id}`}><Button size="sm" variant="outline"><FileText className="size-4" /> Report</Button></Link>
+                  <Button size="sm" variant="ghost" onClick={() => remove(s)} aria-label="Delete service"><Trash2 className="size-4 text-absent" /></Button>
                 </div>
               </li>
             ))}
@@ -123,20 +95,18 @@ export default function Services() {
 
       <NewServiceModal
         open={creating}
+        types={lookup('service_type')}
         onClose={() => setCreating(false)}
-        onCreated={(s) => {
-          setCreating(false)
-          setServices((list) => [s, ...list])
-          setQrFor(s)
-        }}
+        onCreated={(s) => { setCreating(false); setServices((list) => [s, ...list]); setQrFor(s) }}
       />
       <QrModal target={qrFor} onClose={() => setQrFor(null)} />
     </>
   )
 }
 
-function NewServiceModal({ open, onClose, onCreated }) {
-  const [form, setForm] = useState({ title: 'Sunday Service', service_type: 'Sunday Service', service_date: toISODate(new Date()) })
+function NewServiceModal({ open, types, onClose, onCreated }) {
+  const first = types[0] ?? 'Sunday Service'
+  const [form, setForm] = useState({ title: first, service_type: first, service_date: toISODate(new Date()) })
   const [closeOthers, setCloseOthers] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -145,9 +115,7 @@ function NewServiceModal({ open, onClose, onCreated }) {
     e.preventDefault()
     setBusy(true)
     setError(null)
-    if (closeOthers) {
-      await supabase.from('services').update({ is_open: false }).eq('is_open', true)
-    }
+    if (closeOthers) await supabase.from('services').update({ is_open: false }).eq('is_open', true)
     const { data, error } = await supabase.from('services').insert({ ...form, is_open: true }).select().single()
     setBusy(false)
     if (error) setError(error)
@@ -155,29 +123,13 @@ function NewServiceModal({ open, onClose, onCreated }) {
   }
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="New service"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" form="new-service" loading={busy}>Create and open check-in</Button>
-        </>
-      }
-    >
+    <Modal open={open} onClose={onClose} title="New service"
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button type="submit" form="new-service" loading={busy}>Create and open check-in</Button></>}>
       <form id="new-service" onSubmit={submit} className="space-y-4">
         <ErrorNote error={error} />
         <Field label="Service type">
-          <select
-            className={inputClass}
-            value={form.service_type}
-            onChange={(e) => setForm((f) => ({ ...f, service_type: e.target.value, title: e.target.value }))}
-          >
-            {SERVICE_TYPES.map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
+          <Select allowEmpty={false} value={form.service_type} options={types}
+            onChange={(e) => setForm((f) => ({ ...f, service_type: e.target.value, title: e.target.value }))} />
         </Field>
         <Field label="Title" hint="Shown to members on the check-in page">
           <input required className={inputClass} value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
@@ -195,6 +147,7 @@ function NewServiceModal({ open, onClose, onCreated }) {
 }
 
 function QrModal({ target, onClose }) {
+  const { settings } = useSettings()
   const [copied, setCopied] = useState(false)
   const printRef = useRef(null)
   if (!target) return null
@@ -203,13 +156,7 @@ function QrModal({ target, onClose }) {
   const url = `${window.location.origin}/checkin${permanent ? '' : `/${target.id}`}`
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* ignore */
-    }
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch { /* ignore */ }
   }
 
   function printQr() {
@@ -217,34 +164,23 @@ function QrModal({ target, onClose }) {
     if (!w) return
     w.document.write(`<!doctype html><html><head><title>Check-in QR</title>
       <style>body{font-family:Georgia,serif;text-align:center;padding:48px;color:#1f2a44}
-      h1{font-size:32px;margin:0 0 8px}p{font-size:18px;margin:4px 0}svg{width:360px;height:360px;margin:32px auto}</style>
-      </head><body>${printRef.current.innerHTML}</body></html>`)
+      h1{font-size:32px;margin:0 0 8px}p{font-size:18px;margin:4px 0}svg{width:360px;height:360px;margin:32px auto}
+      img{max-height:90px;margin-bottom:12px}</style></head><body>${printRef.current.innerHTML}</body></html>`)
     w.document.close()
     w.focus()
     w.print()
   }
 
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title={permanent ? 'Entrance QR code' : 'Check-in QR code'}
-      footer={
-        <>
-          <Button variant="outline" onClick={copy}>
-            {copied ? <Check className="size-4" /> : <Copy className="size-4" />} {copied ? 'Copied' : 'Copy link'}
-          </Button>
-          <Button onClick={printQr}>
-            <Printer className="size-4" /> Print
-          </Button>
-        </>
-      }
-    >
+    <Modal open onClose={onClose} title={permanent ? 'Entrance QR code' : 'Check-in QR code'}
+      footer={<>
+        <Button variant="outline" onClick={copy}>{copied ? <Check className="size-4" /> : <Copy className="size-4" />}{copied ? 'Copied' : 'Copy link'}</Button>
+        <Button onClick={printQr}><Printer className="size-4" /> Print</Button>
+      </>}>
       <div ref={printRef} className="text-center">
-        <h1 className="font-display text-2xl">{CHURCH_NAME}</h1>
-        <p className="text-slate-600">
-          {permanent ? 'Scan to mark your attendance' : `${target.title}, ${formatDate(target.service_date)}`}
-        </p>
+        {settings?.logo_url && <img src={settings.logo_url} alt="" className="mx-auto mb-2 max-h-16 object-contain" />}
+        <h1 className="font-display text-2xl">{settings?.church_name}</h1>
+        <p className="text-slate-600">{permanent ? 'Scan to mark your attendance' : `${target.title}, ${formatDate(target.service_date)}`}</p>
         <div className="mx-auto my-5 w-fit rounded-xl border border-slate-200 bg-white p-4">
           <QRCodeSVG value={url} size={240} level="M" fgColor="#15302a" />
         </div>

@@ -1,112 +1,162 @@
-# Church Attendance
+# Church Management System
 
-A simple web app for taking church attendance with QR codes, built with **React + Vite**, **Tailwind CSS v4** and **Supabase**.
+Attendance, membership, bulk SMS, church accounts and fixed assets — built for a local church and run from a phone or a laptop.
 
-## What it does
+Stack: React + Vite, Tailwind CSS v4, Supabase (Postgres, Auth, Storage, Edge Functions).
 
-| Use case | Where |
-|---|---|
-| Member scans a QR code, browses the list (A–Z) and taps their name to check in | `/checkin` or `/checkin/<serviceId>` |
-| Member with the page open on a phone types their name and checks in | Same page, search box at the top |
-| End-of-service report of who was present and absent, with CSV export and print | Admin → **Reports** |
-| Monthly attendance trends by age group, gender, membership and department, plus a follow-up list | Admin → **Dashboard** |
+---
 
-Admins can also add/edit/import members, open and close services, print QR codes, and mark people present or remove a check-in by hand.
+## What's inside
 
-## Setup (about 10 minutes)
+**Attendance**
+- Members scan a QR code at the entrance, find their name and tap **Check in**. No login, no app to install.
+- One permanent entrance QR code that always opens whichever service is currently open.
+- End-of-service report: who was present, who was absent, attendance rate, a breakdown by group, CSV export and a clean printout.
+- Dashboard with monthly trends and a follow-up list of members who have missed the last few services.
 
-### 1. Create a Supabase project
-Go to [supabase.com](https://supabase.com), create a free project and wait for it to finish provisioning.
+**Members**
+- Full member records: group, phone numbers, email, date of birth, marital status, ministries, membership status, addresses, baptism date, talents, emergency contact.
+- **Group is required** on every member and drives reporting, SMS and the dashboard.
+- Member profile page with attendance rate, giving totals and payment history.
+- CSV import and export.
 
-### 2. Create the database
-In Supabase open **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, and click **Run**.
+**Bulk SMS (Hubtel)**
+- Send to all members, the absentees of a service, the people present at a service, the follow-up list, one group, or numbers you type in.
+- Personalise with `{name}` and `{church}`; live character and SMS-part counter.
+- Credentials are stored in the database and only read on the server, never in the browser.
+- Delivery history with sent and failed counts, plus a test-send button.
 
-Optional: run `supabase/seed.sql` too. It adds 40 demo members and six months of services with attendance so the dashboard has data to show. You can remove it later with:
-```sql
-truncate public.attendance, public.services, public.members cascade;
-```
+**Accounting**
+- Chart of accounts you control, with live balances.
+- Record tithes, welfare and special contributions per member; record offerings and donations generally.
+- Record expenses. Every contribution and expense posts a double entry automatically.
+- Manual journal entries for receivables, payables and corrections — the system refuses anything that doesn't balance.
+- Reports: income and expenditure, trial balance, account ledger with running balance, and what each member has paid.
 
-### 3. Create your admin login
-**Authentication → Users → Add user → Create new user.** Enter your email and a password, and tick *Auto confirm user*.
+**Fixed assets**
+- Asset register with cost, quantity, location, custodian, condition and status.
+- Straight-line depreciation and net book value, and an option to post the purchase to the accounts.
 
-### 4. Make that user an admin
-Back in the SQL Editor run (with your email):
-```sql
-insert into public.admins (user_id)
-select id from auth.users where email = 'you@yourchurch.org';
-```
-Repeat steps 3–4 for every secretary or usher who should manage attendance. Anyone not in `admins` can sign in but can't see any data.
+**Setup**
+- Church profile: name, address, location, contact details, currency and logo — the logo flows through the check-in page, the interface and every printed report.
+- Every dropdown in the system is editable by the administrator.
 
-Recommended: **Authentication → Sign In / Providers → turn off "Allow new users to sign up"**, since admins are created by hand.
+---
 
-### 5. Configure and run the app
-Requires Node.js 20.19+ (or 22.12+).
+## Getting it running
+
+### 1. Create the database
+
+In your Supabase project: **SQL Editor → New query**, paste the whole of `supabase/schema.sql` and run it.
+
+The file is safe to run more than once. Running it on an existing v1 database upgrades it in place — your members, services and attendance are untouched.
+
+### 2. Load the member register (optional)
+
+`supabase/import-members.sql` holds the 306 members from the COP Salem Assembly spreadsheet. Paste it into a **new** SQL Editor tab and run it once, after `schema.sql`. Groups are matched by name and created if missing.
+
+To start the register over: `delete from public.members;` and run the file again.
+
+You can also import from a spreadsheet inside the app: **Members → Import CSV** (see `supabase/sample-members.csv` for the columns).
+
+### 3. Deploy the SMS function
+
+Bulk SMS goes through a small server-side function so your Hubtel credentials never reach anyone's browser.
+
+**From the dashboard:** Supabase → **Edge Functions** → *Deploy a new function* → name it exactly `send-sms` → paste the contents of `supabase/functions/send-sms/index.ts` → Deploy.
+
+**Or with the CLI:**
+
 ```bash
-cp .env.example .env      # then fill in the values below
+supabase functions deploy send-sms
+```
+
+Nothing else to configure: the function reads the project URL and keys from the environment Supabase already provides.
+
+### 4. Create your admin account
+
+**Authentication → Users → Add user**, tick *Auto Confirm User*, then in the SQL Editor:
+
+```sql
+insert into public.admins (user_id, full_name)
+select id, 'Your Name' from auth.users where email = 'you@example.com';
+```
+
+Repeat for each person who should have access. Give everyone their own login rather than sharing one.
+
+### 5. Run the app
+
+```bash
 npm install
+cp .env.example .env     # then paste your Supabase URL and anon key
 npm run dev
 ```
-`.env` values come from **Project Settings → API** (or **API Keys**):
-```
-VITE_SUPABASE_URL=https://xxxx.supabase.co
-VITE_SUPABASE_ANON_KEY=your anon / publishable key
-VITE_CHURCH_NAME=Your Church Name
-```
-Never use the `service_role` / secret key in this app.
 
-Open http://localhost:5173 and sign in. The dev server also listens on your local network, so phones on the same Wi-Fi can reach it at `http://<your-computer-ip>:5173/checkin` for testing.
+On Windows PowerShell, if `npm` is blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use Command Prompt.
 
-## Using it on a Sunday
+### 6. Set up the church
 
-1. **Services → New service.** This opens check-in and shows a QR code.
-2. Print it or put it on the projector. Members scan, find their name, tap **Check in**, then **Mark present**.
-3. For a code you print once and leave at the entrance, use **Entrance QR code**. It always opens the most recent open service.
-4. After the service, open **Reports**, click **Close check-in**, then export CSV or print the present and absent lists.
+Sign in and go to **Settings**:
+
+1. **Church profile** — name, address, location, currency, and upload your logo.
+2. **SMS** — paste your Hubtel Client ID, Client Secret and approved Sender ID, then switch SMS on.
+3. **Groups** — create or rename your groups and set their leaders.
+4. **Payment types** — link Tithe, Welfare and Special Contribution to the income and cash accounts they should hit.
+5. **Dropdowns** — adjust any list in the system: ministries, departments, service types, asset categories and so on.
+
+---
 
 ## Deploying
 
-Any static host works. Build with `npm run build` and deploy `dist/`.
+Works on Netlify, Vercel or any static host.
 
-- **Vercel:** import the repo, add the three `VITE_` environment variables, deploy. `vercel.json` handles page routing.
-- **Netlify:** build command `npm run build`, publish directory `dist`, add the env variables. `public/_redirects` handles routing.
+- Build command `npm run build`, publish directory `dist`.
+- Environment variables: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Do **not** mark them as secret — Vite bakes `VITE_` variables into the bundle at build time, and the secret scanner will fail the build.
+- After changing an environment variable, redeploy with **Clear cache and deploy site**; Vite only reads them while building.
+- If a colleague sees "You don't have access to this site", the site is set to private in your host's settings.
 
-QR codes use the address the admin is viewing the site from, so generate them from the live URL, not localhost.
+`vercel.json` (included) and Netlify's default SPA handling send every route back to `index.html`, which is what the check-in links need.
 
-## How security works
+---
 
-- Every table has row level security. Only users listed in `admins` can read or change data.
-- People checking in are not logged in. They can only call two database functions:
-  - `get_checkin_data` returns the open service and member **names and departments only** (no phone numbers).
-  - `mark_present` records attendance only for an open service and an active member. Duplicate check-ins are ignored.
-- Closing a service stops all further self check-ins for it.
+## How the money side works
 
-Anyone with the link can mark any name present while a service is open. That's the usual trade-off for tap-your-name check-in. Closing check-in promptly after service and reviewing the report (self check-ins vs admin entries are labelled) keeps it honest.
+Every payment you record creates a balanced double entry, so the books are always in step with the register:
 
-## How the numbers are calculated
+| You record | Debit | Credit |
+|---|---|---|
+| A tithe of GH₵100 | Cash on Hand | Tithes |
+| An expense of GH₵50 for fuel | Transport and Fuel | Cash on Hand |
+| An asset purchase (when you tick *post to accounts*) | the asset account | Cash on Hand |
 
-- **Absent** means an active member who had joined on or before the service date and did not check in. Set a member's *Joined on* date so newcomers aren't counted absent for services before they arrived. Inactive members never count as absent.
-- **Attendance rate** is present ÷ expected (active members who had joined by that date).
-- **Needs a follow-up call** lists active members who missed three or more closed services in a row, within the selected range and service type.
-- Dashboard figures are calculated in the browser. That's comfortable for a few thousand members and a year of weekly services.
+Receivables, payables and corrections go through **Journal entries**, where you choose the accounts yourself. The system will not post an entry whose debits and credits differ.
 
-## Customising
+If a payment type has no accounts linked yet, the payment is still recorded — it simply isn't posted until you link the accounts under **Settings → Payment types**.
 
-- Departments, service types, age groups and membership types live in `src/lib/constants.js`. If you change age groups, gender or membership values, update the matching `check` constraints in `schema.sql` too (departments and service types are free text in the database).
-- Colours and fonts are defined in the `@theme` block of `src/index.css`.
+---
 
-## Importing members
+## Security
 
-**Members → Import CSV.** The file needs a header row. Only `full_name` is required; see `supabase/sample-members.csv`:
-```
-full_name,phone,gender,age_group,department,member_type,joined_on,is_active
-```
+- Members who check in are anonymous. They can only call two database functions: one that lists names for an open service, and one that marks a person present. They cannot read phone numbers, giving records or anything else.
+- Every table is behind row level security and only users listed in `public.admins` can read or write.
+- SMS credentials are read only by the `send-sms` function running on Supabase's servers, which also verifies that the caller is an administrator.
+- Never put your `service_role` key in `.env` or anywhere in this app.
 
-## Project structure
+---
+
+## Project layout
+
 ```
 src/
-  pages/        CheckIn, Dashboard, Services, Members, Reports, Login
-  components/   Layout, Modal, ProtectedRoute, ui primitives
-  context/      AuthContext (session + admin check)
-  lib/          supabase client, constants, helpers (CSV, dates)
-supabase/       schema.sql, seed.sql, sample-members.csv
+  pages/        Dashboard, CheckIn, Services, Members, MemberProfile, Reports, Sms,
+                Contributions, Expenses, ChartOfAccounts, Journal, FinanceReports,
+                Assets, Settings, Login
+  components/   Layout, Modal, shared UI primitives
+  context/      AuthContext (session), SettingsContext (church profile, dropdowns, accounts)
+  lib/          supabase client, formatting and CSV helpers
+supabase/
+  schema.sql              the whole database, safe to re-run
+  import-members.sql      the 306 real members, run once
+  sample-members.csv      template for the in-app CSV import
+  functions/send-sms/     the bulk SMS function
 ```

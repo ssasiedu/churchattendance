@@ -1,4 +1,4 @@
-full_name,phone,gender,age_group,department,member_type,joined_on,is_active
-Abena Mensah,0240000001,Female,Adults,Choir,Worker,2024-01-07,yes
-Kwame Asante,0240000002,Male,Adults,Ushering,Member,2024-03-10,yes
-Esi Boateng,,Female,Youth,Youth Ministry,Member,2025-06-01,yes
+full_name,group,phone,phone_alt,email,gender,date_of_birth,marital_status,age_group,membership_status,department,ministries,postal_address,location_landmark,joined_on,emergency_name,emergency_phone,is_active
+Abena Mensah,Group 1,0240000001,,abena@example.com,Female,1990-04-12,Married,Adults,Worker,Choir,Women Ministry,GA-123-4567,Near the community clinic,2024-01-07,Kofi Mensah,0240000011,yes
+Kwame Asante,Group 2,0240000002,,kwame@example.com,Male,1998-11-02,Single,Youth,Member,Ushering,Youth Ministry; Evangelism Ministry,GA-123-4568,Opposite the school,2024-03-10,Ama Asante,0240000012,yes
+Esi Boateng,Group 3,0240000003,,,Female,2010-06-21,Single,Children,Member,Sunday School,Children Ministry,,Behind the market,2024-05-19,Yaw Boateng,0240000013,yes

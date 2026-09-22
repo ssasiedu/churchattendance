@@ -94,3 +94,74 @@ export function Badge({ tone = 'slate', children }) {
   }
   return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', tones[tone])}>{children}</span>
 }
+
+export function Select({ value, onChange, options = [], placeholder = 'Select…', allowEmpty = true, ...props }) {
+  return (
+    <select className={inputClass} value={value ?? ''} onChange={onChange} {...props}>
+      {allowEmpty && <option value="">{placeholder}</option>}
+      {options.map((o) => {
+        const val = typeof o === 'string' ? o : o.value
+        const label = typeof o === 'string' ? o : o.label
+        return (
+          <option key={val} value={val}>
+            {label}
+          </option>
+        )
+      })}
+    </select>
+  )
+}
+
+export function MultiSelect({ values = [], options = [], onChange, columns = 2 }) {
+  function toggle(option) {
+    onChange(values.includes(option) ? values.filter((v) => v !== option) : [...values, option])
+  }
+  return (
+    <div className={cn('grid gap-1.5', columns === 2 ? 'sm:grid-cols-2' : '')}>
+      {options.map((o) => (
+        <label key={o} className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={values.includes(o)} onChange={() => toggle(o)} className="size-4 accent-pew-600" />
+          {o}
+        </label>
+      ))}
+      {options.length === 0 && <p className="text-sm text-slate-500">Add options under Settings → Dropdowns.</p>}
+    </div>
+  )
+}
+
+export function Money({ value, className }) {
+  const negative = Number(value) < 0
+  return <span className={cn('tabular-nums', negative && 'text-absent', className)}>{value}</span>
+}
+
+export function Empty({ title, children }) {
+  return (
+    <div className="px-4 py-12 text-center">
+      <p className="font-display text-lg">{title}</p>
+      {children && <p className="mt-1 text-sm text-slate-600">{children}</p>}
+    </div>
+  )
+}
+
+export function Toolbar({ children }) {
+  return <div className="no-print mb-4 flex flex-wrap items-center gap-2">{children}</div>
+}
+
+export function Tabs({ value, onChange, options }) {
+  return (
+    <div className="inline-flex flex-wrap rounded-lg bg-slate-100 p-1">
+      {options.map((o) => (
+        <button
+          key={o.key}
+          onClick={() => onChange(o.key)}
+          className={cn(
+            'rounded-md px-3 py-1.5 text-sm font-semibold transition-colors',
+            value === o.key ? 'bg-white text-ink shadow-sm' : 'text-slate-600 hover:text-ink'
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}

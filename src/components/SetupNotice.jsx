@@ -10,7 +10,7 @@ export default function SetupNotice() {
       <pre className="mt-6 overflow-x-auto rounded-lg bg-ink p-4 text-sm text-slate-100">
 {`VITE_SUPABASE_URL=https://xxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
-VITE_CHURCH_NAME=Your Church Name`}
+`}
       </pre>
     </div>
   )

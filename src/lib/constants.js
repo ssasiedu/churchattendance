@@ -1,34 +1,41 @@
-export const CHURCH_NAME = import.meta.env.VITE_CHURCH_NAME || 'Our Church'
-
-export const GENDERS = ['Male', 'Female']
-export const AGE_GROUPS = ['Children', 'Youth', 'Young Adults', 'Adults', 'Seniors']
-export const MEMBER_TYPES = ['Member', 'Worker', 'New Convert', 'Visitor']
-export const DEPARTMENTS = [
-  'Choir',
-  'Ushering',
-  'Protocol',
-  'Media',
-  'Prayer Team',
-  'Elders',
-  'Youth Ministry',
-  "Children's Ministry",
-  "Women's Ministry",
-  "Men's Fellowship",
-]
-export const SERVICE_TYPES = [
-  'Sunday Service',
-  'Midweek Service',
-  'Prayer Meeting',
-  'Youth Service',
-  'Special Program',
+export const CHART_COLORS = [
+  '#2f5d50', '#c8962e', '#5b7fb3', '#b4463c', '#7a5c99',
+  '#3f9aa8', '#8a6418', '#6b8f3a', '#c26d95', '#5c6b7a', '#9aa5b1',
 ]
 
-// Used by the dashboard category breakdown
-export const CATEGORY_OPTIONS = [
-  { key: 'age_group', label: 'Age group', values: AGE_GROUPS },
-  { key: 'gender', label: 'Gender', values: GENDERS },
-  { key: 'member_type', label: 'Membership', values: MEMBER_TYPES },
-  { key: 'department', label: 'Department', values: [...DEPARTMENTS, 'Unassigned'] },
+export const ACCOUNT_TYPES = ['Asset', 'Liability', 'Equity', 'Income', 'Expense']
+
+// Dropdowns the administrator can edit under Settings → Dropdowns
+export const LOOKUP_CATEGORIES = [
+  { key: 'gender', label: 'Gender' },
+  { key: 'marital_status', label: 'Marital status' },
+  { key: 'age_group', label: 'Age group' },
+  { key: 'membership_status', label: 'Membership status' },
+  { key: 'ministry', label: 'Ministry' },
+  { key: 'department', label: 'Department' },
+  { key: 'service_type', label: 'Service type' },
+  { key: 'communication_method', label: 'Preferred communication' },
+  { key: 'payment_method', label: 'Payment method' },
+  { key: 'asset_category', label: 'Asset category' },
+  { key: 'asset_condition', label: 'Asset condition' },
+  { key: 'asset_status', label: 'Asset status' },
 ]
 
-export const CHART_COLORS = ['#2f5d50', '#c8962e', '#5b7fb3', '#b4463c', '#7a5c99', '#3f9aa8', '#8a6418', '#6b8f3a', '#c26d95', '#5c6b7a', '#9aa5b1']
+// Categories the dashboard can break attendance down by
+export const BREAKDOWN_OPTIONS = [
+  { key: 'group_name', label: 'Group' },
+  { key: 'age_group', label: 'Age group' },
+  { key: 'gender', label: 'Gender' },
+  { key: 'member_type', label: 'Membership' },
+  { key: 'ministry', label: 'Ministry' },
+  { key: 'department', label: 'Department' },
+]
+
+export const SMS_AUDIENCES = [
+  { key: 'all', label: 'All active members' },
+  { key: 'absent', label: 'Absent members for a service' },
+  { key: 'present', label: 'Members present at a service' },
+  { key: 'followup', label: 'Follow-up list' },
+  { key: 'group', label: 'A group' },
+  { key: 'custom', label: 'Type numbers myself' },
+]

@@ -16,7 +16,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   }, [open, onClose])
 
   if (!open) return null
-  const widths = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl' }
+  const widths = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-3xl' }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/50 p-0 sm:items-center sm:p-4" onClick={onClose}>

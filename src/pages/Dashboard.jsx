@@ -1,483 +1,288 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { CalendarCheck, Users, TrendingUp, PhoneCall, HandCoins, Receipt, MessageSquare, Plus } from 'lucide-react'
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
+  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { ArrowDownRight, ArrowUpRight, Phone, QrCode } from 'lucide-react'
 import { supabase, fetchAll } from '../lib/supabase'
-import { CATEGORY_OPTIONS, CHART_COLORS, SERVICE_TYPES } from '../lib/constants'
-import { cn, formatDate, monthKey, monthLabel, parseDate, pct, toISODate } from '../lib/utils'
-import { Button, ErrorNote, PageHeader, Panel, Spinner, inputClass } from '../components/ui'
-
-const RANGES = [
-  { months: 3, label: 'Last 3 months' },
-  { months: 6, label: 'Last 6 months' },
-  { months: 12, label: 'Last 12 months' },
-]
+import { useSettings } from '../context/SettingsContext'
+import { BREAKDOWN_OPTIONS, CHART_COLORS } from '../lib/constants'
+import { formatDate, monthKey, monthLabel, pct, toISODate } from '../lib/utils'
+import { Button, Empty, ErrorNote, PageHeader, Panel, Select, Spinner } from '../components/ui'
 
 const axisProps = { tick: { fontSize: 12, fill: '#64748b' }, tickLine: false, axisLine: false }
-const tooltipStyle = { borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }
-
-function categoryValue(member, key) {
-  if (key === 'department') return member.department || 'Unassigned'
-  return member[key] || 'Not set'
-}
 
 export default function Dashboard() {
-  const [months, setMonths] = useState(6)
-  const [serviceType, setServiceType] = useState('')
-  const [categoryKey, setCategoryKey] = useState('age_group')
-  const [raw, setRaw] = useState(null)
+  const { settings, groups, money } = useSettings()
+  const [members, setMembers] = useState([])
+  const [services, setServices] = useState([])
+  const [attendance, setAttendance] = useState([])
+  const [contributions, setContributions] = useState([])
+  const [expenses, setExpenses] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [breakdown, setBreakdown] = useState('group_name')
 
   useEffect(() => {
-    let cancelled = false
     async function load() {
-      setLoading(true)
-      setError(null)
-      const now = new Date()
-      const start = toISODate(new Date(now.getFullYear(), now.getMonth() - (months - 1), 1))
-      const end = toISODate(now)
       try {
-        const [services, attendance, members] = await Promise.all([
-          fetchAll(() =>
-            supabase.from('services').select('*').gte('service_date', start).lte('service_date', end).order('service_date').order('id')
-          ),
-          fetchAll(() =>
-            supabase
-              .from('attendance')
-              .select('service_id, member_id, services!inner(service_date)')
-              .gte('services.service_date', start)
-              .lte('services.service_date', end)
-              .order('id')
-          ),
-          fetchAll(() => supabase.from('members').select('*').order('id')),
+        const since = toISODate(new Date(Date.now() - 180 * 24 * 3600 * 1000))
+        const [mem, svc, con, exp] = await Promise.all([
+          fetchAll(() => supabase.from('members').select('*').order('full_name').order('id')),
+          supabase.from('services').select('*').gte('service_date', since).order('service_date', { ascending: false }),
+          fetchAll(() => supabase.from('contributions').select('amount, contribution_date').gte('contribution_date', since).order('id')),
+          fetchAll(() => supabase.from('expenses').select('amount, expense_date').gte('expense_date', since).order('id')),
         ])
-        if (!cancelled) setRaw({ services, attendance, members, start, end })
-      } catch (e) {
-        if (!cancelled) setError(e)
-      }
-      if (!cancelled) setLoading(false)
+        setMembers(mem)
+        setServices(svc.data ?? [])
+        setContributions(con)
+        setExpenses(exp)
+        const ids = (svc.data ?? []).map((s) => s.id)
+        if (ids.length) {
+          setAttendance(await fetchAll(() => supabase.from('attendance').select('service_id, member_id').in('service_id', ids).order('id')))
+        }
+      } catch (e) { setError(e) }
+      setLoading(false)
     }
     load()
-    return () => {
-      cancelled = true
-    }
-  }, [months])
+  }, [])
 
-  const stats = useMemo(() => (raw ? computeStats(raw, serviceType, categoryKey) : null), [raw, serviceType, categoryKey])
-  const category = CATEGORY_OPTIONS.find((c) => c.key === categoryKey)
+  const activeMembers = members.filter((m) => m.is_active)
+  const closedServices = useMemo(() => services.filter((s) => !s.is_open), [services])
+  const latest = services[0]
+
+  const presentBy = useMemo(() => {
+    const map = new Map()
+    for (const a of attendance) {
+      if (!map.has(a.service_id)) map.set(a.service_id, new Set())
+      map.get(a.service_id).add(a.member_id)
+    }
+    return map
+  }, [attendance])
+
+  const latestPresent = latest ? (presentBy.get(latest.id)?.size ?? 0) : 0
+  const latestExpected = latest ? activeMembers.filter((m) => m.joined_on <= latest.service_date).length : 0
+
+  const averageRate = useMemo(() => {
+    const recent = closedServices.slice(0, 8)
+    if (!recent.length) return 0
+    const rates = recent.map((s) => {
+      const expected = activeMembers.filter((m) => m.joined_on <= s.service_date).length
+      return expected ? ((presentBy.get(s.id)?.size ?? 0) / expected) * 100 : 0
+    })
+    return Math.round(rates.reduce((a, b) => a + b, 0) / rates.length)
+  }, [closedServices, activeMembers, presentBy])
+
+  const trend = useMemo(() => {
+    const map = new Map()
+    for (const s of closedServices) {
+      const k = monthKey(s.service_date)
+      const cur = map.get(k) ?? { key: k, label: monthLabel(k), attendances: 0, services: 0 }
+      cur.attendances += presentBy.get(s.id)?.size ?? 0
+      cur.services += 1
+      map.set(k, cur)
+    }
+    return [...map.values()]
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((m) => ({ ...m, average: Math.round(m.attendances / m.services) }))
+  }, [closedServices, presentBy])
+
+  const breakdownData = useMemo(() => {
+    if (!latest) return []
+    const present = presentBy.get(latest.id) ?? new Set()
+    const map = new Map()
+    for (const m of activeMembers) {
+      if (!present.has(m.id)) continue
+      const keys =
+        breakdown === 'group_name' ? [groups.find((g) => g.id === m.group_id)?.name ?? 'No group']
+        : breakdown === 'ministry' ? (m.ministries?.length ? m.ministries : ['No ministry'])
+        : [m[breakdown] || 'Not set']
+      for (const k of keys) map.set(k, (map.get(k) ?? 0) + 1)
+    }
+    return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
+  }, [latest, presentBy, activeMembers, breakdown, groups])
+
+  const followUp = useMemo(() => {
+    const threshold = settings?.follow_up_threshold ?? 3
+    const recent = closedServices.slice(0, threshold)
+    if (recent.length < threshold) return []
+    return activeMembers
+      .filter((m) => recent.every((s) => m.joined_on <= s.service_date && !presentBy.get(s.id)?.has(m.id)))
+      .slice(0, 12)
+  }, [closedServices, activeMembers, presentBy, settings])
+
+  const finance = useMemo(() => {
+    const start = toISODate(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
+    const income = contributions.filter((c) => c.contribution_date >= start).reduce((n, c) => n + Number(c.amount), 0)
+    const spent = expenses.filter((e) => e.expense_date >= start).reduce((n, e) => n + Number(e.amount), 0)
+    const map = new Map()
+    for (const c of contributions) {
+      const k = monthKey(c.contribution_date)
+      const cur = map.get(k) ?? { key: k, label: monthLabel(k), Income: 0, Expenditure: 0 }
+      cur.Income += Number(c.amount)
+      map.set(k, cur)
+    }
+    for (const e of expenses) {
+      const k = monthKey(e.expense_date)
+      const cur = map.get(k) ?? { key: k, label: monthLabel(k), Income: 0, Expenditure: 0 }
+      cur.Expenditure += Number(e.amount)
+      map.set(k, cur)
+    }
+    return { income, spent, monthly: [...map.values()].sort((a, b) => a.key.localeCompare(b.key)) }
+  }, [contributions, expenses])
+
+  if (loading) return <Spinner label="Loading your dashboard…" />
 
   return (
     <>
       <PageHeader
-        title="Attendance trends"
-        subtitle="How attendance is moving, who is coming, and who needs a call."
+        title={`Welcome to ${settings?.church_name ?? 'your church'}`}
+        subtitle={latest ? `Latest service: ${latest.title}, ${formatDate(latest.service_date, { day: 'numeric', month: 'long' })}` : 'Create your first service to get started.'}
         actions={
-          <Link to="/services">
-            <Button>
-              <QrCode className="size-4" /> Start check-in
-            </Button>
-          </Link>
+          <>
+            <Link to="/contributions"><Button variant="outline"><HandCoins className="size-4" /> Record payment</Button></Link>
+            <Link to="/services"><Button><Plus className="size-4" /> New service</Button></Link>
+          </>
         }
       />
-
-      <div className="mb-6 flex flex-wrap gap-2">
-        <select className={`${inputClass} w-auto`} value={months} onChange={(e) => setMonths(Number(e.target.value))} aria-label="Date range">
-          {RANGES.map((r) => (
-            <option key={r.months} value={r.months}>{r.label}</option>
-          ))}
-        </select>
-        <select className={`${inputClass} w-auto`} value={serviceType} onChange={(e) => setServiceType(e.target.value)} aria-label="Service type">
-          <option value="">All service types</option>
-          {SERVICE_TYPES.map((t) => <option key={t}>{t}</option>)}
-        </select>
-      </div>
-
       <ErrorNote error={error} />
 
-      {loading || !stats ? (
-        <Spinner label="Crunching attendance…" />
-      ) : stats.serviceCount === 0 ? (
-        <Panel>
-          <div className="py-10 text-center">
-            <p className="font-display text-xl">No services in this range</p>
-            <p className="mt-1 text-slate-600">Create a service and let members check in. Trends appear here after the first service.</p>
-          </div>
-        </Panel>
-      ) : (
-        <div className="space-y-6">
-          {/* Headline */}
-          <section className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-2 lg:grid-cols-4">
-            <Kpi label="Average per service" value={stats.avgAttendance} note={`across ${stats.serviceCount} services`} />
-            <Kpi label="Attendance rate" value={`${stats.avgRate}%`} note="of active members expected" />
-            <Kpi
-              label="This month vs last"
-              value={stats.monthDelta == null ? '—' : `${stats.monthDelta > 0 ? '+' : ''}${stats.monthDelta}%`}
-              note="change in average attendance"
-              trend={stats.monthDelta}
-            />
-            <Kpi label="Active members" value={stats.activeMembers} note={`${stats.newMembers} joined in this period`} />
-          </section>
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi icon={Users} label="Active members" value={activeMembers.length} hint={`${groups.length} groups`} />
+        <Kpi icon={CalendarCheck} label="Latest attendance" value={latestPresent}
+          hint={latestExpected ? `${pct(latestPresent, latestExpected)}% of ${latestExpected} expected` : 'No service yet'} />
+        <Kpi icon={TrendingUp} label="Average attendance" value={`${averageRate}%`} hint="Last 8 closed services" />
+        <Kpi icon={PhoneCall} label="Need a follow-up call" value={followUp.length}
+          hint={`Missed the last ${settings?.follow_up_threshold ?? 3} services`} tone={followUp.length ? 'text-absent' : undefined} />
+      </div>
 
-          {stats.insights.length > 0 && (
-            <section className="rounded-xl border border-brass-300 bg-brass-100/60 px-5 py-4">
-              <h2 className="font-display text-lg text-brass-700">What stands out</h2>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink">
-                {stats.insights.map((t) => <li key={t}>{t}</li>)}
-              </ul>
-            </section>
-          )}
+      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-slate-200 bg-pew-900 px-5 py-4 text-white">
+          <p className="text-sm text-pew-200">Income this month</p>
+          <p className="mt-1 font-display text-3xl">{money(finance.income)}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
+          <p className="text-sm text-slate-500">Spent this month</p>
+          <p className="mt-1 font-display text-3xl text-absent">{money(finance.spent)}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
+          <p className="text-sm text-slate-500">{finance.income - finance.spent >= 0 ? 'Surplus' : 'Deficit'} this month</p>
+          <p className="mt-1 font-display text-3xl">{money(Math.abs(finance.income - finance.spent))}</p>
+        </div>
+      </div>
 
-          {/* Monthly trend */}
-          <Panel title="Monthly trend">
-            <div className="h-72">
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Panel title="Attendance by month" className="lg:col-span-2">
+          {trend.length ? (
+            <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={stats.monthly} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                <LineChart data={trend} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                   <CartesianGrid stroke="#eef2f6" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} />
-                  <YAxis yAxisId="count" {...axisProps} allowDecimals={false} />
-                  <YAxis yAxisId="rate" orientation="right" {...axisProps} domain={[0, 100]} unit="%" />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend wrapperStyle={{ fontSize: 13 }} />
-                  <Bar yAxisId="count" dataKey="avgAttendance" name="Avg attendance" fill="#2f5d50" radius={[4, 4, 0, 0]} maxBarSize={44} />
-                  <Line yAxisId="rate" dataKey="rate" name="Attendance rate (%)" stroke="#c8962e" strokeWidth={2.5} dot={{ r: 3 }} />
-                </ComposedChart>
+                  <YAxis {...axisProps} allowDecimals={false} />
+                  <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }}
+                    formatter={(v, n) => [v, n === 'average' ? 'Average per service' : 'Total check-ins']} />
+                  <Line type="monotone" dataKey="average" stroke="#2f5d50" strokeWidth={2.5} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="attendances" stroke="#c8962e" strokeWidth={2} strokeDasharray="4 4" dot={false} />
+                </LineChart>
               </ResponsiveContainer>
             </div>
-          </Panel>
+          ) : <Empty title="No closed services yet">Close a service and its numbers appear here.</Empty>}
+        </Panel>
 
-          {/* Category breakdown */}
-          <Panel
-            title="Who is attending"
-            action={
-              <div className="inline-flex flex-wrap rounded-lg bg-slate-100 p-1">
-                {CATEGORY_OPTIONS.map((c) => (
-                  <button
-                    key={c.key}
-                    onClick={() => setCategoryKey(c.key)}
-                    className={cn(
-                      'rounded-md px-3 py-1 text-sm font-semibold',
-                      categoryKey === c.key ? 'bg-white text-ink shadow-sm' : 'text-slate-600'
-                    )}
-                  >
-                    {c.label}
-                  </button>
-                ))}
-              </div>
-            }
-          >
-            <div className="grid gap-6 lg:grid-cols-5">
-              <div className="h-80 lg:col-span-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.categoryMonthly} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-                    <CartesianGrid stroke="#eef2f6" vertical={false} />
-                    <XAxis dataKey="label" {...axisProps} />
-                    <YAxis {...axisProps} allowDecimals={false} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    {stats.categoryValues.map((v, i) => (
-                      <Bar key={v} dataKey={v} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} maxBarSize={44} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-                <p className="mt-1 text-xs text-slate-500">Average attendance per service, by {category.label.toLowerCase()}</p>
-              </div>
-              <div className="lg:col-span-2">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-slate-500">
-                      <th className="pb-2 font-medium">{category.label}</th>
-                      <th className="pb-2 text-right font-medium">Avg</th>
-                      <th className="pb-2 text-right font-medium">Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {stats.categoryTable.map((r, i) => (
-                      <tr key={r.name}>
-                        <td className="py-2">
-                          <span className="mr-2 inline-block size-2.5 rounded-sm" style={{ background: CHART_COLORS[stats.categoryValues.indexOf(r.name) % CHART_COLORS.length] || CHART_COLORS[i] }} />
-                          {r.name}
-                        </td>
-                        <td className="py-2 text-right tabular-nums">{r.avg}</td>
-                        <td className="py-2 text-right">
-                          <span className={cn('tabular-nums font-semibold', r.rate < 50 ? 'text-absent' : r.rate >= 75 ? 'text-pew-600' : 'text-ink')}>
-                            {r.expected ? `${r.rate}%` : '—'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+        <Panel title="Who came last service"
+          action={<Select allowEmpty={false} value={breakdown} onChange={(e) => setBreakdown(e.target.value)}
+            options={BREAKDOWN_OPTIONS.map((b) => ({ value: b.key, label: b.label }))} />}>
+          {breakdownData.length ? (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={breakdownData} dataKey="value" nameKey="name" innerRadius={48} outerRadius={84} paddingAngle={2}>
+                    {breakdownData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
-          </Panel>
+          ) : <Empty title="Nobody checked in yet" />}
+        </Panel>
+      </div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Panel title="Service by service">
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={stats.perService} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-                    <CartesianGrid stroke="#eef2f6" vertical={false} />
-                    <XAxis dataKey="short" {...axisProps} minTickGap={24} />
-                    <YAxis {...axisProps} allowDecimals={false} />
-                    <Tooltip contentStyle={tooltipStyle} labelFormatter={(_, p) => p?.[0]?.payload?.full ?? ''} />
-                    <Line dataKey="present" name="Present" stroke="#2f5d50" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </Panel>
+      <div className="mt-6 grid gap-6 lg:grid-cols-3">
+        <Panel title="Income and expenditure" className="lg:col-span-2"
+          action={<Link to="/finance-reports" className="text-sm font-medium text-pew-600 hover:underline">Full reports</Link>}>
+          {finance.monthly.length ? (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={finance.monthly} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                  <CartesianGrid stroke="#eef2f6" vertical={false} />
+                  <XAxis dataKey="label" {...axisProps} />
+                  <YAxis {...axisProps} />
+                  <Tooltip formatter={(v) => money(v)} contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
+                  <Legend wrapperStyle={{ fontSize: 13 }} />
+                  <Bar dataKey="Income" fill="#2f5d50" radius={[4, 4, 0, 0]} maxBarSize={32} />
+                  <Bar dataKey="Expenditure" fill="#c8962e" radius={[4, 4, 0, 0]} maxBarSize={32} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <Empty title="No money recorded yet">
+              <Link to="/contributions" className="font-medium text-pew-600 underline">Record a contribution</Link> or{' '}
+              <Link to="/expenses" className="font-medium text-pew-600 underline">an expense</Link> to see it here.
+            </Empty>
+          )}
+        </Panel>
 
-            <Panel title="By service type">
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.byType} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
-                    <CartesianGrid stroke="#eef2f6" horizontal={false} />
-                    <XAxis type="number" {...axisProps} allowDecimals={false} />
-                    <YAxis type="category" dataKey="name" {...axisProps} width={120} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Bar dataKey="avg" name="Avg attendance" fill="#c8962e" radius={[0, 4, 4, 0]} maxBarSize={28} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </Panel>
-          </div>
+        <Panel title="Follow-up list"
+          action={followUp.length > 0 && (
+            <Link to="/sms?audience=followup"><Button size="sm" variant="outline"><MessageSquare className="size-4" /> SMS them</Button></Link>
+          )}>
+          {followUp.length === 0 ? (
+            <Empty title="Nobody is missing">Everyone has been at one of the recent services.</Empty>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {followUp.map((m) => (
+                <li key={m.id} className="flex items-center gap-2 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <Link to={`/members/${m.id}`} className="block truncate font-medium hover:text-pew-600 hover:underline">{m.full_name}</Link>
+                    <p className="truncate text-xs text-slate-500">{groups.find((g) => g.id === m.group_id)?.name ?? 'No group'}</p>
+                  </div>
+                  {m.phone && <a href={`tel:${m.phone}`} className="rounded-md p-1.5 text-pew-600 hover:bg-pew-50" aria-label={`Call ${m.full_name}`}><PhoneCall className="size-4" /></a>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
 
-          {/* Follow-up */}
-          <Panel
-            title="Needs a follow-up call"
-            action={<span className="text-sm text-slate-500">Missed 3 or more services in a row</span>}
-          >
-            {stats.followUp.length === 0 ? (
-              <p className="py-4 text-center text-slate-600">No one has missed three services in a row.</p>
-            ) : (
-              <ul className="grid gap-x-8 sm:grid-cols-2">
-                {stats.followUp.slice(0, 20).map((m) => (
-                  <li key={m.id} className="flex items-center gap-3 border-b border-slate-100 py-2.5">
-                    <span className="grid size-9 shrink-0 place-items-center rounded-full bg-absent/10 font-display text-absent">{m.streak}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{m.full_name}</p>
-                      <p className="truncate text-xs text-slate-500">
-                        {m.lastSeen ? `Last seen ${formatDate(m.lastSeen, { day: 'numeric', month: 'short' })}` : 'Not seen in this period'}
-                        {m.department ? `, ${m.department}` : ''}
-                      </p>
-                    </div>
-                    {m.phone && (
-                      <a href={`tel:${m.phone}`} className="rounded-md p-2 text-pew-600 hover:bg-pew-50" aria-label={`Call ${m.full_name}`}>
-                        <Phone className="size-4" />
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {stats.followUp.length > 20 && (
-              <p className="mt-3 text-sm text-slate-500">Showing 20 of {stats.followUp.length}. Use service reports for the full absent lists.</p>
-            )}
-          </Panel>
-        </div>
-      )}
+      <div className="mt-6 grid gap-3 sm:grid-cols-3">
+        <QuickLink to="/contributions" icon={HandCoins} label="Record tithes and welfare" />
+        <QuickLink to="/expenses" icon={Receipt} label="Record an expense" />
+        <QuickLink to="/sms" icon={MessageSquare} label="Send a bulk SMS" />
+      </div>
     </>
   )
 }
 
-function Kpi({ label, value, note, trend }) {
+function Kpi({ icon: Icon, label, value, hint, tone }) {
   return (
-    <div className="bg-white px-5 py-4">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className="mt-1 flex items-center gap-1 font-display text-3xl">
-        {value}
-        {trend > 0 && <ArrowUpRight className="size-5 text-pew-600" />}
-        {trend < 0 && <ArrowDownRight className="size-5 text-absent" />}
-      </p>
-      <p className="mt-0.5 text-xs text-slate-500">{note}</p>
+    <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
+      <div className="flex items-center gap-2 text-slate-500">
+        <Icon className="size-4" />
+        <p className="text-sm">{label}</p>
+      </div>
+      <p className={`mt-1 font-display text-3xl ${tone ?? ''}`}>{value}</p>
+      {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
     </div>
   )
 }
 
-// ---------------------------------------------------------------------
-// All analytics are computed in the browser from three queries.
-// Comfortable for a few thousand members and a year of services.
-// ---------------------------------------------------------------------
-function computeStats(raw, serviceType, categoryKey) {
-  const { members, attendance } = raw
-  const services = raw.services.filter((s) => !serviceType || s.service_type === serviceType)
-  const memberById = new Map(members.map((m) => [m.id, m]))
-  const active = members.filter((m) => m.is_active)
-  const category = CATEGORY_OPTIONS.find((c) => c.key === categoryKey)
-
-  const presentBySvc = new Map()
-  for (const a of attendance) {
-    if (!presentBySvc.has(a.service_id)) presentBySvc.set(a.service_id, new Set())
-    presentBySvc.get(a.service_id).add(a.member_id)
-  }
-
-  // Per-service facts
-  const perServiceFacts = services.map((s) => {
-    const present = presentBySvc.get(s.id) ?? new Set()
-    const eligible = active.filter((m) => m.joined_on <= s.service_date)
-    const presentByCat = {}
-    const expectedByCat = {}
-    for (const id of present) {
-      const m = memberById.get(id)
-      if (!m) continue
-      const v = categoryValue(m, categoryKey)
-      presentByCat[v] = (presentByCat[v] ?? 0) + 1
-    }
-    let presentEligible = 0
-    for (const m of eligible) {
-      const v = categoryValue(m, categoryKey)
-      expectedByCat[v] = (expectedByCat[v] ?? 0) + 1
-      if (present.has(m.id)) presentEligible++
-    }
-    return { s, present, eligible: eligible.length, presentEligible, presentByCat, expectedByCat }
-  })
-
-  // Monthly
-  const monthKeys = []
-  const startD = parseDate(raw.start)
-  const endD = parseDate(raw.end)
-  for (let d = new Date(startD.getFullYear(), startD.getMonth(), 1); d <= endD; d.setMonth(d.getMonth() + 1)) {
-    monthKeys.push(toISODate(d).slice(0, 7))
-  }
-  const byMonth = new Map(monthKeys.map((k) => [k, []]))
-  for (const f of perServiceFacts) byMonth.get(monthKey(f.s.service_date))?.push(f)
-
-  const monthly = monthKeys.map((k) => {
-    const list = byMonth.get(k)
-    const total = list.reduce((n, f) => n + f.present.size, 0)
-    const pe = list.reduce((n, f) => n + f.presentEligible, 0)
-    const el = list.reduce((n, f) => n + f.eligible, 0)
-    return {
-      key: k,
-      label: monthLabel(k),
-      services: list.length,
-      avgAttendance: list.length ? Math.round(total / list.length) : 0,
-      rate: el ? pct(pe, el) : null,
-    }
-  })
-
-  // Category values present in the data, in configured order first
-  const seen = new Set()
-  for (const f of perServiceFacts) {
-    Object.keys(f.presentByCat).forEach((v) => seen.add(v))
-    Object.keys(f.expectedByCat).forEach((v) => seen.add(v))
-  }
-  const categoryValues = [...category.values.filter((v) => seen.has(v)), ...[...seen].filter((v) => !category.values.includes(v))]
-
-  const categoryMonthly = monthKeys.map((k) => {
-    const list = byMonth.get(k)
-    const row = { label: monthLabel(k) }
-    for (const v of categoryValues) {
-      const sum = list.reduce((n, f) => n + (f.presentByCat[v] ?? 0), 0)
-      row[v] = list.length ? Math.round((sum / list.length) * 10) / 10 : 0
-    }
-    return row
-  })
-
-  const categoryTable = categoryValues
-    .map((v) => {
-      const presentSum = perServiceFacts.reduce((n, f) => n + (f.presentByCat[v] ?? 0), 0)
-      const expected = perServiceFacts.reduce((n, f) => n + (f.expectedByCat[v] ?? 0), 0)
-      return {
-        name: v,
-        avg: Math.round((presentSum / perServiceFacts.length) * 10) / 10,
-        expected,
-        rate: expected ? Math.min(100, pct(presentSum, expected)) : 0,
-      }
-    })
-    .sort((a, b) => b.avg - a.avg)
-
-  // Per service line
-  const perService = perServiceFacts.map((f) => ({
-    short: formatDate(f.s.service_date, { day: 'numeric', month: 'short' }),
-    full: `${f.s.title}, ${formatDate(f.s.service_date)}`,
-    present: f.present.size,
-  }))
-
-  // By service type (ignores the type filter so types can be compared)
-  const typeMap = new Map()
-  for (const s of raw.services) {
-    const t = typeMap.get(s.service_type) ?? { total: 0, count: 0 }
-    t.total += presentBySvc.get(s.id)?.size ?? 0
-    t.count += 1
-    typeMap.set(s.service_type, t)
-  }
-  const byType = [...typeMap.entries()]
-    .map(([name, t]) => ({ name, avg: Math.round(t.total / t.count) }))
-    .sort((a, b) => b.avg - a.avg)
-
-  // KPIs
-  const totalPresent = perServiceFacts.reduce((n, f) => n + f.present.size, 0)
-  const totalPE = perServiceFacts.reduce((n, f) => n + f.presentEligible, 0)
-  const totalEl = perServiceFacts.reduce((n, f) => n + f.eligible, 0)
-  const cur = monthly[monthly.length - 1]
-  const prev = monthly[monthly.length - 2]
-  const monthDelta = cur?.services && prev?.services && prev.avgAttendance ? pct(cur.avgAttendance - prev.avgAttendance, prev.avgAttendance) : null
-
-  // Follow-up: consecutive misses, newest first, closed services only
-  const closedDesc = perServiceFacts.filter((f) => !f.s.is_open).reverse()
-  const followUp = active
-    .map((m) => {
-      let streak = 0
-      let lastSeen = null
-      for (const f of closedDesc) {
-        if (f.s.service_date < m.joined_on) break
-        if (f.present.has(m.id)) {
-          lastSeen = f.s.service_date
-          break
-        }
-        streak++
-      }
-      return { ...m, streak, lastSeen }
-    })
-    .filter((m) => m.streak >= 3)
-    .sort((a, b) => b.streak - a.streak || a.full_name.localeCompare(b.full_name))
-
-  // Plain-language insights
-  const insights = []
-  const rated = monthly.filter((m) => m.services && m.rate != null)
-  if (rated.length >= 2) {
-    const best = rated.reduce((a, b) => (b.rate > a.rate ? b : a))
-    const worst = rated.reduce((a, b) => (b.rate < a.rate ? b : a))
-    if (best.key !== worst.key) insights.push(`Strongest month was ${best.label} at ${best.rate}%; weakest was ${worst.label} at ${worst.rate}%.`)
-  }
-  if (monthDelta != null && Math.abs(monthDelta) >= 5) {
-    insights.push(`Average attendance is ${monthDelta > 0 ? 'up' : 'down'} ${Math.abs(monthDelta)}% compared with last month.`)
-  }
-  const lowCat = categoryTable.filter((c) => c.expected >= 5).sort((a, b) => a.rate - b.rate)[0]
-  if (lowCat && lowCat.rate < 60) {
-    insights.push(`${lowCat.name} has the lowest attendance rate by ${category.label.toLowerCase()} (${lowCat.rate}%).`)
-  }
-  if (followUp.length) {
-    insights.push(`${followUp.length} active ${followUp.length === 1 ? 'member has' : 'members have'} missed three or more services in a row.`)
-  }
-
-  return {
-    serviceCount: services.length,
-    avgAttendance: services.length ? Math.round(totalPresent / services.length) : 0,
-    avgRate: pct(totalPE, totalEl),
-    monthDelta,
-    activeMembers: active.length,
-    newMembers: active.filter((m) => m.joined_on >= raw.start).length,
-    monthly,
-    categoryValues,
-    categoryMonthly,
-    categoryTable,
-    perService,
-    byType,
-    followUp,
-    insights,
-  }
+function QuickLink({ to, icon: Icon, label }) {
+  return (
+    <Link to={to} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium hover:border-pew-300 hover:bg-pew-50">
+      <Icon className="size-5 text-pew-600" />
+      {label}
+    </Link>
+  )
 }

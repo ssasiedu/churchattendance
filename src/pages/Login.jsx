@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate, useLocation, useNavigate, Link } from 'react-router-dom'
 import { Church } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { CHURCH_NAME } from '../lib/constants'
+import { supabase } from '../lib/supabase'
 import { Button, ErrorNote, Field, inputClass } from '../components/ui'
 
 export default function Login() {
@@ -13,6 +13,12 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [brand, setBrand] = useState(null)
+
+  // The church name and logo are readable without signing in, so the login page can show them
+  useEffect(() => {
+    supabase.rpc('get_church_brand').then(({ data }) => setBrand(data))
+  }, [])
 
   if (session) return <Navigate to={location.state?.from?.pathname || '/'} replace />
 
@@ -29,13 +35,17 @@ export default function Login() {
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
       <div className="hidden flex-col justify-between bg-pew-900 p-12 text-pew-100 lg:flex">
-        <span className="grid size-12 place-items-center rounded-xl bg-pew-600">
-          <Church className="size-6 text-brass-300" />
-        </span>
+        {brand?.logo_url ? (
+          <img src={brand.logo_url} alt="" className="size-14 rounded-xl bg-white object-contain p-1" />
+        ) : (
+          <span className="grid size-12 place-items-center rounded-xl bg-pew-600">
+            <Church className="size-6 text-brass-300" />
+          </span>
+        )}
         <div>
-          <p className="font-display text-5xl leading-tight text-white">{CHURCH_NAME}</p>
+          <p className="font-display text-5xl leading-tight text-white">{brand?.church_name ?? 'Church Management System'}</p>
           <p className="mt-4 max-w-sm text-lg text-pew-200">
-            Know who was in the house, and who you should call this week.
+            {brand?.motto || 'Attendance, members, giving and church accounts in one place.'}
           </p>
         </div>
         <p className="text-sm text-pew-200">Members check in at <Link to="/checkin" className="underline hover:text-white">/checkin</Link></p>
