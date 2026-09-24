@@ -180,10 +180,14 @@ export default function CheckIn() {
               className={cn('flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors',
                 m.present ? 'cursor-default' : 'hover:bg-pew-50 active:bg-pew-100')}
             >
-              <span className={cn('grid size-11 shrink-0 place-items-center rounded-full text-sm font-semibold',
-                m.present ? 'bg-pew-600 text-white' : 'bg-slate-100 text-slate-600')}>
-                {m.present ? <CheckCircle2 className="size-5" /> : initials(m.full_name)}
-              </span>
+              {m.photo_url && !m.present ? (
+                <img src={m.photo_url} alt="" className="size-11 shrink-0 rounded-full object-cover" />
+              ) : (
+                <span className={cn('grid size-11 shrink-0 place-items-center rounded-full text-sm font-semibold',
+                  m.present ? 'bg-pew-600 text-white' : 'bg-slate-100 text-slate-600')}>
+                  {m.present ? <CheckCircle2 className="size-5" /> : initials(m.full_name)}
+                </span>
+              )}
               <span className="min-w-0 flex-1">
                 <span className={cn('block truncate text-base font-semibold', m.present && 'text-slate-500')}>{m.full_name}</span>
                 {m.group_name && <span className="block truncate text-sm text-slate-500">{m.group_name}</span>}
@@ -209,9 +213,13 @@ export default function CheckIn() {
       <Modal open={!!selected} onClose={() => setSelected(null)} title="Confirm check-in" size="sm"
         footer={<><Button variant="ghost" onClick={() => setSelected(null)}>Not me</Button><Button onClick={confirm} loading={busy}>Mark present</Button></>}>
         <div className="py-2 text-center">
-          <span className="mx-auto grid size-16 place-items-center rounded-full bg-pew-50 font-display text-2xl text-pew-600">
-            {initials(selected?.full_name)}
-          </span>
+          {selected?.photo_url ? (
+            <img src={selected.photo_url} alt="" className="mx-auto size-20 rounded-full object-cover" />
+          ) : (
+            <span className="mx-auto grid size-16 place-items-center rounded-full bg-pew-50 font-display text-2xl text-pew-600">
+              {initials(selected?.full_name)}
+            </span>
+          )}
           <p className="mt-3 font-display text-2xl">{selected?.full_name}</p>
           <p className="mt-1 text-sm text-slate-500">{service.title}, {formatDate(service.service_date, { day: 'numeric', month: 'short' })}</p>
         </div>

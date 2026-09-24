@@ -39,3 +39,33 @@ export const SMS_AUDIENCES = [
   { key: 'group', label: 'A group' },
   { key: 'custom', label: 'Type numbers myself' },
 ]
+
+// Every permission the system understands. Roles are built from these.
+export const PERMISSIONS = [
+  { key: 'members.view_all', label: 'See all members', hint: 'Without this, a leader only sees their own group or ministry' },
+  { key: 'members.manage', label: 'Add and edit members' },
+  { key: 'attendance.manage', label: 'Run services and mark attendance' },
+  { key: 'finance.view', label: 'See money and reports' },
+  { key: 'finance.record', label: 'Record payments, bills and expenses' },
+  { key: 'finance.manage', label: 'Manage accounts and journal entries' },
+  { key: 'sms.send', label: 'Send SMS' },
+  { key: 'assets.manage', label: 'Manage fixed assets' },
+  { key: 'reports.view', label: 'See reports' },
+  { key: 'settings.manage', label: 'Change church settings and dropdowns' },
+  { key: 'users.manage', label: 'Add users and set their rights' },
+]
+
+export const MEMBER_CHART_OPTIONS = [
+  { key: 'gender', label: 'Gender' },
+  { key: 'group_name', label: 'Group' },
+  { key: 'ministry', label: 'Ministry' },
+  { key: 'member_type', label: 'Membership status' },
+  { key: 'age_group', label: 'Age group' },
+  { key: 'marital_status', label: 'Marital status' },
+]
+
+export const SMS_PLACEHOLDERS = {
+  payment: ['{name}', '{church}', '{type}', '{amount}', '{balance}', '{date}', '{total_paid}'],
+  billing: ['{name}', '{church}', '{type}', '{amount}', '{balance}', '{due}'],
+  birthday: ['{name}', '{church}'],
+}

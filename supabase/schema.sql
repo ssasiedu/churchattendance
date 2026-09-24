@@ -611,3 +611,495 @@ select t.name, a.id, c.id, t.per_member, t.sort_order
   join public.accounts a on a.code = t.code
   join public.accounts c on c.code = '1000'
 on conflict (name) do nothing;
+
+
+-- =====================================================================
+-- PART 2 — roles and permissions, billing, automated SMS  (v3)
+--
+-- Everything below is also safe to re-run. It replaces some of the
+-- policies and triggers defined above, so always run the whole file.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 16. Roles and users
+-- ---------------------------------------------------------------------
+create table if not exists public.roles (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null unique,
+  description text,
+  permissions text[] not null default '{}',
+  is_system   boolean not null default false,
+  created_at  timestamptz not null default now()
+);
+
+alter table public.admins add column if not exists role_id   uuid references public.roles(id) on delete set null;
+alter table public.admins add column if not exists email     text;
+alter table public.admins add column if not exists phone     text;
+alter table public.admins add column if not exists group_id  uuid references public.groups(id) on delete set null;
+alter table public.admins add column if not exists ministry  text;
+alter table public.admins add column if not exists photo_url text;
+alter table public.admins add column if not exists is_active boolean not null default true;
+
+insert into public.roles (name, description, permissions, is_system) values
+  ('Administrator', 'Full access to everything, including users and settings',
+   array['members.view_all','members.manage','attendance.manage','finance.view','finance.record',
+         'finance.manage','sms.send','assets.manage','reports.view','settings.manage','users.manage'], true),
+  ('Finance Manager', 'Runs contributions, billing, expenses and the accounts',
+   array['members.view_all','attendance.manage','finance.view','finance.record','finance.manage',
+         'sms.send','assets.manage','reports.view'], true),
+  ('Group Leader', 'Sees and follows up their own group',
+   array['attendance.manage','sms.send','reports.view'], true),
+  ('Ministry Leader', 'Sees and follows up their own ministry',
+   array['attendance.manage','sms.send','reports.view'], true),
+  ('Usher', 'Marks attendance only', array['attendance.manage'], true)
+on conflict (name) do nothing;
+
+-- Anyone already set up keeps full access
+update public.admins
+   set role_id = (select id from public.roles where name = 'Administrator')
+ where role_id is null;
+
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.admins where user_id = auth.uid() and is_active);
+$$;
+
+create or replace function public.can(p_permission text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.admins a
+    join public.roles r on r.id = a.role_id
+    where a.user_id = auth.uid() and a.is_active
+      and (r.name = 'Administrator' or p_permission = any(r.permissions))
+  );
+$$;
+
+create or replace function public.my_group()
+returns uuid language sql stable security definer set search_path = public as $$
+  select group_id from public.admins where user_id = auth.uid();
+$$;
+
+create or replace function public.my_ministries()
+returns text[] language sql stable security definer set search_path = public as $$
+  select case when ministry is null then '{}'::text[] else array[ministry] end
+    from public.admins where user_id = auth.uid();
+$$;
+
+create or replace function public.my_profile()
+returns json language sql stable security definer set search_path = public as $$
+  select json_build_object(
+    'user_id', a.user_id, 'full_name', a.full_name, 'email', a.email, 'phone', a.phone,
+    'photo_url', a.photo_url, 'is_active', a.is_active, 'group_id', a.group_id,
+    'group_name', g.name, 'ministry', a.ministry,
+    'role', r.name, 'role_id', r.id,
+    'permissions', case when r.name = 'Administrator' then
+        array['members.view_all','members.manage','attendance.manage','finance.view','finance.record',
+              'finance.manage','sms.send','assets.manage','reports.view','settings.manage','users.manage']
+      else coalesce(r.permissions, '{}') end)
+    from public.admins a
+    left join public.roles r on r.id = a.role_id
+    left join public.groups g on g.id = a.group_id
+   where a.user_id = auth.uid();
+$$;
+
+grant execute on function public.can(text)        to authenticated;
+grant execute on function public.my_profile()     to authenticated;
+grant execute on function public.my_group()       to authenticated;
+grant execute on function public.my_ministries()  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 17. Billing: welfare batches and special contributions
+-- ---------------------------------------------------------------------
+alter table public.contribution_types add column if not exists is_billable boolean not null default false;
+alter table public.contribution_types add column if not exists kind text not null default 'general';
+alter table public.contribution_types add column if not exists receivable_account_id uuid references public.accounts(id) on delete set null;
+alter table public.contribution_types add column if not exists default_amount numeric(14,2);
+alter table public.contribution_types add column if not exists is_archived boolean not null default false;
+
+create table if not exists public.billing_runs (
+  id                   uuid primary key default gen_random_uuid(),
+  contribution_type_id uuid not null references public.contribution_types(id) on delete cascade,
+  title                text not null,
+  description          text,
+  amount               numeric(14,2) not null check (amount > 0),
+  bill_date            date not null default current_date,
+  due_date             date,
+  scope_group_id       uuid references public.groups(id) on delete set null,
+  billed_count         int not null default 0,
+  total_amount         numeric(14,2) not null default 0,
+  created_by           uuid references auth.users(id) on delete set null,
+  created_at           timestamptz not null default now()
+);
+create index if not exists billing_runs_type_idx on public.billing_runs(contribution_type_id);
+
+create table if not exists public.member_bills (
+  id                   uuid primary key default gen_random_uuid(),
+  run_id               uuid not null references public.billing_runs(id) on delete cascade,
+  member_id            uuid not null references public.members(id) on delete cascade,
+  contribution_type_id uuid not null references public.contribution_types(id) on delete cascade,
+  amount               numeric(14,2) not null check (amount > 0),
+  bill_date            date not null default current_date,
+  due_date             date,
+  note                 text,
+  created_at           timestamptz not null default now(),
+  unique (run_id, member_id)
+);
+create index if not exists member_bills_member_idx on public.member_bills(member_id, contribution_type_id);
+
+-- Billing entries need their own journal source
+alter table public.journal_entries drop constraint if exists journal_entries_source_check;
+alter table public.journal_entries add constraint journal_entries_source_check
+  check (source in ('manual', 'contribution', 'expense', 'asset', 'billing'));
+
+-- Bill everyone at once, and post the receivable in the same transaction
+create or replace function public.create_billing_run(
+  p_type_id uuid, p_title text, p_amount numeric, p_bill_date date default current_date,
+  p_due_date date default null, p_group_id uuid default null, p_description text default null
+) returns json language plpgsql security definer set search_path = public as $$
+declare
+  v_run uuid; v_count int; v_total numeric(14,2);
+  v_type public.contribution_types; v_entry uuid;
+begin
+  if not public.can('finance.record') then raise exception 'You do not have permission to raise bills'; end if;
+  if p_amount is null or p_amount <= 0 then raise exception 'Enter an amount greater than zero'; end if;
+
+  select * into v_type from public.contribution_types where id = p_type_id;
+  if not found then raise exception 'Unknown payment type'; end if;
+
+  insert into public.billing_runs (contribution_type_id, title, description, amount, bill_date, due_date, scope_group_id, created_by)
+  values (p_type_id, p_title, p_description, p_amount, coalesce(p_bill_date, current_date), p_due_date, p_group_id, auth.uid())
+  returning id into v_run;
+
+  insert into public.member_bills (run_id, member_id, contribution_type_id, amount, bill_date, due_date)
+  select v_run, m.id, p_type_id, p_amount, coalesce(p_bill_date, current_date), p_due_date
+    from public.members m
+   where m.is_active and (p_group_id is null or m.group_id = p_group_id);
+
+  get diagnostics v_count = row_count;
+  v_total := v_count * p_amount;
+  update public.billing_runs set billed_count = v_count, total_amount = v_total where id = v_run;
+
+  -- Debit what members now owe, credit the income it belongs to
+  if v_count > 0 and v_type.receivable_account_id is not null and v_type.income_account_id is not null then
+    insert into public.journal_entries (entry_date, reference, description, source, source_id, created_by)
+    values (coalesce(p_bill_date, current_date), null, p_title || ' — billed to ' || v_count || ' members', 'billing', v_run, auth.uid())
+    returning id into v_entry;
+
+    insert into public.journal_lines (entry_id, account_id, debit, credit, description, line_no)
+    values (v_entry, v_type.receivable_account_id, v_total, 0, p_title, 1),
+           (v_entry, v_type.income_account_id, 0, v_total, p_title, 2);
+  end if;
+
+  return json_build_object('run_id', v_run, 'billed', v_count, 'total', v_total);
+end $$;
+
+create or replace function public.delete_billing_run(p_run_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.can('finance.record') then raise exception 'You do not have permission to remove bills'; end if;
+  delete from public.journal_entries where source = 'billing' and source_id = p_run_id;
+  delete from public.billing_runs where id = p_run_id;
+end $$;
+
+-- Raise a special contribution: creates the payment type, then bills everyone
+create or replace function public.create_special_contribution(
+  p_name text, p_amount numeric, p_income_account_id uuid, p_cash_account_id uuid,
+  p_bill_date date default current_date, p_due_date date default null,
+  p_group_id uuid default null, p_description text default null
+) returns json language plpgsql security definer set search_path = public as $$
+declare v_type uuid; v_receivable uuid;
+begin
+  if not public.can('finance.record') then raise exception 'You do not have permission to raise a special contribution'; end if;
+
+  select id into v_receivable from public.accounts where code = '1200' limit 1;
+
+  insert into public.contribution_types
+    (name, income_account_id, default_cash_account_id, receivable_account_id,
+     per_member, is_billable, kind, default_amount, sort_order)
+  values (p_name, p_income_account_id, p_cash_account_id, v_receivable, true, true, 'special', p_amount,
+          (select coalesce(max(sort_order), 0) + 1 from public.contribution_types))
+  returning id into v_type;
+
+  return public.create_billing_run(v_type, p_name, p_amount, p_bill_date, p_due_date, p_group_id, p_description);
+end $$;
+
+grant execute on function public.create_billing_run(uuid, text, numeric, date, date, uuid, text) to authenticated;
+grant execute on function public.delete_billing_run(uuid) to authenticated;
+grant execute on function public.create_special_contribution(text, numeric, uuid, uuid, date, date, uuid, text) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 18. A payment against a billable type settles the debt, it is not new income
+-- ---------------------------------------------------------------------
+create or replace function public.sync_contribution_journal()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid; v_credit uuid; v_cash uuid; v_entry uuid; v_name text; v_member text;
+  v_type public.contribution_types;
+begin
+  v_id := coalesce(new.id, old.id);
+  delete from public.journal_entries where source = 'contribution' and source_id = v_id;
+  if tg_op = 'DELETE' then return old; end if;
+
+  select * into v_type from public.contribution_types where id = new.contribution_type_id;
+  v_name := v_type.name;
+  v_cash := coalesce(new.cash_account_id, v_type.default_cash_account_id);
+
+  -- A payment against something the member was billed for clears the receivable,
+  -- because the income was already recognised when the bill was raised.
+  -- Anything else (tithes, offerings, an unbilled welfare payment) is income now.
+  v_credit := case
+    when v_type.is_billable
+     and v_type.receivable_account_id is not null
+     and new.member_id is not null
+     and exists (select 1 from public.member_bills b
+                  where b.member_id = new.member_id
+                    and b.contribution_type_id = new.contribution_type_id)
+    then v_type.receivable_account_id
+    else v_type.income_account_id end;
+
+  if v_credit is null or v_cash is null then return new; end if;
+
+  select full_name into v_member from public.members where id = new.member_id;
+
+  insert into public.journal_entries (entry_date, reference, description, source, source_id, created_by)
+  values (new.contribution_date, new.reference, v_name || coalesce(' — ' || v_member, ''), 'contribution', new.id, new.recorded_by)
+  returning id into v_entry;
+
+  insert into public.journal_lines (entry_id, account_id, debit, credit, description, member_id, line_no)
+  values (v_entry, v_cash,   new.amount, 0, v_name, new.member_id, 1),
+         (v_entry, v_credit, 0, new.amount, v_name, new.member_id, 2);
+  return new;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 19. Balances, bills and defaulters
+-- ---------------------------------------------------------------------
+drop view if exists public.v_member_balances;
+create view public.v_member_balances with (security_invoker = on) as
+with billed as (
+  select member_id, contribution_type_id, sum(amount) as amount, max(bill_date) as last_bill
+    from public.member_bills group by 1, 2
+), paid as (
+  select member_id, contribution_type_id, sum(amount) as amount, max(contribution_date) as last_paid
+    from public.contributions where member_id is not null group by 1, 2
+)
+select m.id as member_id, m.full_name, m.phone, m.group_id, g.name as group_name, m.is_active,
+       ct.id as contribution_type_id, ct.name as contribution_type, ct.is_billable, ct.kind,
+       coalesce(b.amount, 0) as billed,
+       coalesce(p.amount, 0) as paid,
+       coalesce(b.amount, 0) - coalesce(p.amount, 0) as balance,
+       b.last_bill, p.last_paid
+  from public.members m
+  cross join public.contribution_types ct
+  left join public.groups g on g.id = m.group_id
+  left join billed b on b.member_id = m.id and b.contribution_type_id = ct.id
+  left join paid   p on p.member_id = m.id and p.contribution_type_id = ct.id
+ where coalesce(b.amount, 0) > 0 or coalesce(p.amount, 0) > 0;
+
+-- Each bill, and how much of it is still outstanding (oldest bills settled first)
+drop view if exists public.v_bills;
+create view public.v_bills with (security_invoker = on) as
+with paid as (
+  select member_id, contribution_type_id, sum(amount) as total
+    from public.contributions where member_id is not null group by 1, 2
+), ordered as (
+  select b.*, sum(b.amount) over (
+           partition by b.member_id, b.contribution_type_id
+           order by b.bill_date, b.created_at, b.id
+           rows between unbounded preceding and current row) as cumulative
+    from public.member_bills b
+)
+select o.id, o.run_id, o.member_id, o.contribution_type_id, o.amount, o.bill_date, o.due_date, o.note,
+       m.full_name, m.phone, m.group_id, g.name as group_name, m.is_active,
+       ct.name as contribution_type, r.title as run_title,
+       least(o.amount, greatest(0, coalesce(p.total, 0) - (o.cumulative - o.amount))) as settled,
+       o.amount - least(o.amount, greatest(0, coalesce(p.total, 0) - (o.cumulative - o.amount))) as outstanding
+  from ordered o
+  join public.members m on m.id = o.member_id
+  left join public.groups g on g.id = m.group_id
+  join public.contribution_types ct on ct.id = o.contribution_type_id
+  join public.billing_runs r on r.id = o.run_id
+  left join paid p on p.member_id = o.member_id and p.contribution_type_id = o.contribution_type_id;
+
+-- ---------------------------------------------------------------------
+-- 20. Settings for automatic messages and photos
+-- ---------------------------------------------------------------------
+alter table public.settings add column if not exists sms_on_payment boolean not null default false;
+alter table public.settings add column if not exists sms_payment_template text
+  default 'Dear {name}, we have received your {type} of {amount} on {date}. Outstanding balance: {balance}. Thank you and God bless you. - {church}';
+alter table public.settings add column if not exists sms_on_billing boolean not null default false;
+alter table public.settings add column if not exists sms_billing_template text
+  default 'Dear {name}, your {type} of {amount} is due{due}. Your total outstanding balance is {balance}. - {church}';
+alter table public.settings add column if not exists sms_birthday_enabled boolean not null default false;
+alter table public.settings add column if not exists sms_birthday_template text
+  default 'Happy birthday {name}! The whole {church} family celebrates with you today. May the Lord bless you and keep you.';
+alter table public.settings add column if not exists birthday_last_run date;
+alter table public.settings add column if not exists cron_secret text;
+alter table public.settings add column if not exists show_photos_on_checkin boolean not null default false;
+
+update public.settings
+   set sms_payment_template = coalesce(sms_payment_template, 'Dear {name}, we have received your {type} of {amount} on {date}. Outstanding balance: {balance}. Thank you and God bless you. - {church}'),
+       sms_billing_template = coalesce(sms_billing_template, 'Dear {name}, your {type} of {amount} is due{due}. Your total outstanding balance is {balance}. - {church}'),
+       sms_birthday_template = coalesce(sms_birthday_template, 'Happy birthday {name}! The whole {church} family celebrates with you today. May the Lord bless you and keep you.')
+ where id = 1;
+
+-- Members whose birthday falls on a given day
+create or replace function public.birthdays_on(p_date date default current_date)
+returns table (id uuid, full_name text, phone text, date_of_birth date, group_id uuid, photo_url text)
+language sql stable security definer set search_path = public as $$
+  select m.id, m.full_name, m.phone, m.date_of_birth, m.group_id, m.photo_url
+    from public.members m
+   where m.is_active and m.date_of_birth is not null
+     and to_char(m.date_of_birth, 'MM-DD') = to_char(p_date, 'MM-DD')
+   order by m.full_name;
+$$;
+grant execute on function public.birthdays_on(date) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 21. Check-in now shows photos when the church turns them on
+-- ---------------------------------------------------------------------
+create or replace function public.get_checkin_data(p_service_id uuid default null)
+returns json language plpgsql stable security definer set search_path = public as $$
+declare v_service public.services; v_settings public.settings;
+begin
+  if p_service_id is null then
+    select * into v_service from public.services where is_open
+     order by service_date desc, created_at desc limit 1;
+  else
+    select * into v_service from public.services where id = p_service_id and is_open;
+  end if;
+  if not found then return null; end if;
+
+  select * into v_settings from public.settings where id = 1;
+
+  return json_build_object(
+    'church', json_build_object('name', v_settings.church_name, 'logo_url', v_settings.logo_url),
+    'service', json_build_object('id', v_service.id, 'title', v_service.title,
+                                 'service_type', v_service.service_type, 'service_date', v_service.service_date),
+    'members', coalesce((
+      select json_agg(json_build_object(
+               'id', m.id, 'full_name', m.full_name, 'group_name', g.name,
+               'photo_url', case when v_settings.show_photos_on_checkin then m.photo_url else null end,
+               'present', a.id is not null) order by m.full_name)
+        from public.members m
+        left join public.groups g on g.id = m.group_id
+        left join public.attendance a on a.member_id = m.id and a.service_id = v_service.id
+       where m.is_active), '[]'::json)
+  );
+end $$;
+grant execute on function public.get_checkin_data(uuid) to anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 22. Row level security, now driven by each user's role
+-- ---------------------------------------------------------------------
+do $$
+declare
+  t text;
+  spec record;
+begin
+  -- clear the blanket policies created in part 1
+  foreach t in array array['members','services','attendance','settings','lookups','groups','accounts',
+                           'journal_entries','journal_lines','contribution_types','contributions',
+                           'expenses','assets','sms_messages','sms_recipients']
+  loop
+    execute format('drop policy if exists "admins manage %s" on public.%I', t, t);
+  end loop;
+
+  for spec in
+    select * from (values
+      -- table,               read permission,      write permission
+      ('services',            null,                 'attendance.manage'),
+      ('attendance',          null,                 'attendance.manage'),
+      ('settings',            null,                 'settings.manage'),
+      ('lookups',             null,                 'settings.manage'),
+      ('groups',              null,                 'settings.manage'),
+      ('roles',               null,                 'users.manage'),
+      ('accounts',            'finance.view',       'finance.manage'),
+      ('journal_entries',     'finance.view',       'finance.manage'),
+      ('journal_lines',       'finance.view',       'finance.manage'),
+      ('contribution_types',  'finance.view',       'finance.manage'),
+      ('contributions',       'finance.view',       'finance.record'),
+      ('expenses',            'finance.view',       'finance.record'),
+      ('billing_runs',        'finance.view',       'finance.record'),
+      ('member_bills',        'finance.view',       'finance.record'),
+      ('assets',              null,                 'assets.manage'),
+      ('sms_messages',        null,                 'sms.send'),
+      ('sms_recipients',      null,                 'sms.send')
+    ) as v(tbl, read_perm, write_perm)
+  loop
+    execute format('alter table public.%I enable row level security', spec.tbl);
+    execute format('drop policy if exists "read %s" on public.%I', spec.tbl, spec.tbl);
+    execute format('drop policy if exists "write %s" on public.%I', spec.tbl, spec.tbl);
+    execute format(
+      'create policy "read %s" on public.%I for select to authenticated using (%s)',
+      spec.tbl, spec.tbl,
+      case when spec.read_perm is null then 'public.is_admin()'
+           else format('public.can(%L)', spec.read_perm) end);
+    execute format(
+      'create policy "write %s" on public.%I for all to authenticated using (public.can(%L)) with check (public.can(%L))',
+      spec.tbl, spec.tbl, spec.write_perm, spec.write_perm);
+  end loop;
+end $$;
+
+-- Members: leaders see their own people, everyone else needs members.view_all
+alter table public.members enable row level security;
+drop policy if exists "read members" on public.members;
+create policy "read members" on public.members for select to authenticated
+  using (
+    public.can('members.view_all')
+    or (group_id is not null and group_id = public.my_group())
+    or (ministries && public.my_ministries())
+  );
+drop policy if exists "write members" on public.members;
+create policy "write members" on public.members for all to authenticated
+  using (public.can('members.manage')) with check (public.can('members.manage'));
+
+-- Users: everyone signed in can see who else has access; only users.manage may change it
+alter table public.admins enable row level security;
+drop policy if exists "admins read self" on public.admins;
+drop policy if exists "read users" on public.admins;
+create policy "read users" on public.admins for select to authenticated
+  using (user_id = auth.uid() or public.is_admin());
+drop policy if exists "write users" on public.admins;
+create policy "write users" on public.admins for all to authenticated
+  using (public.can('users.manage')) with check (public.can('users.manage'));
+
+-- ---------------------------------------------------------------------
+-- 23. Welfare becomes a billable type, and gets its receivable account
+-- ---------------------------------------------------------------------
+update public.contribution_types ct
+   set is_billable = true,
+       kind = 'recurring',
+       receivable_account_id = coalesce(ct.receivable_account_id, (select id from public.accounts where code = '1200'))
+ where lower(ct.name) = 'welfare';
+
+update public.contribution_types ct
+   set receivable_account_id = coalesce(ct.receivable_account_id, (select id from public.accounts where code = '1200'))
+ where ct.is_billable;
+
+-- ---------------------------------------------------------------------
+-- 24. Everyone may edit their own name, phone and photo — nothing else
+-- ---------------------------------------------------------------------
+create or replace function public.guard_admin_self_update()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if not public.can('users.manage') then
+    if new.user_id is distinct from old.user_id
+       or new.role_id is distinct from old.role_id
+       or new.is_active is distinct from old.is_active
+       or new.group_id is distinct from old.group_id
+       or new.ministry is distinct from old.ministry then
+      raise exception 'You may only change your own name, phone and photo';
+    end if;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_admin_self_update on public.admins;
+create trigger trg_admin_self_update
+before update on public.admins
+for each row execute function public.guard_admin_self_update();
+
+drop policy if exists "update self" on public.admins;
+create policy "update self" on public.admins for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());

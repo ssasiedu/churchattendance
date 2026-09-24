@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, CalendarCheck, Users, FileText, MessageSquare, HandCoins, Receipt,
   BookOpen, NotebookPen, PieChart, Package, Settings as SettingsIcon, LogOut, Church, Menu, X,
+  FileSpreadsheet, Cake,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSettings } from '../context/SettingsContext'
@@ -14,26 +15,29 @@ const SECTIONS = [
     title: 'Attendance',
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-      { to: '/services', label: 'Services', icon: CalendarCheck },
-      { to: '/reports', label: 'Service reports', icon: FileText },
+      { to: '/services', label: 'Services', icon: CalendarCheck, need: 'attendance.manage' },
+      { to: '/reports', label: 'Service reports', icon: FileText, need: 'reports.view' },
       { to: '/members', label: 'Members', icon: Users },
-      { to: '/sms', label: 'SMS', icon: MessageSquare },
+      { to: '/birthdays', label: 'Birthdays', icon: Cake },
+      { to: '/sms', label: 'SMS', icon: MessageSquare, need: 'sms.send' },
     ],
   },
   {
     title: 'Finance',
+    need: 'finance.view',
     items: [
-      { to: '/contributions', label: 'Contributions', icon: HandCoins },
-      { to: '/expenses', label: 'Expenses', icon: Receipt },
-      { to: '/journal', label: 'Journal entries', icon: NotebookPen },
-      { to: '/accounts', label: 'Chart of accounts', icon: BookOpen },
-      { to: '/finance-reports', label: 'Financial reports', icon: PieChart },
+      { to: '/contributions', label: 'Contributions', icon: HandCoins, need: 'finance.view' },
+      { to: '/billing', label: 'Billing and balances', icon: FileSpreadsheet, need: 'finance.view' },
+      { to: '/expenses', label: 'Expenses', icon: Receipt, need: 'finance.view' },
+      { to: '/journal', label: 'Journal entries', icon: NotebookPen, need: 'finance.manage' },
+      { to: '/accounts', label: 'Chart of accounts', icon: BookOpen, need: 'finance.manage' },
+      { to: '/finance-reports', label: 'Financial reports', icon: PieChart, need: 'finance.view' },
     ],
   },
   {
     title: 'Church',
     items: [
-      { to: '/assets', label: 'Fixed assets', icon: Package },
+      { to: '/assets', label: 'Fixed assets', icon: Package, need: 'assets.manage' },
       { to: '/settings', label: 'Settings', icon: SettingsIcon },
     ],
   },
@@ -41,14 +45,15 @@ const SECTIONS = [
 
 const QUICK = [
   { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
-  { to: '/services', label: 'Services', icon: CalendarCheck },
+  { to: '/services', label: 'Services', icon: CalendarCheck, need: 'attendance.manage' },
   { to: '/members', label: 'Members', icon: Users },
-  { to: '/contributions', label: 'Money', icon: HandCoins },
+  { to: '/contributions', label: 'Money', icon: HandCoins, need: 'finance.view' },
+  { to: '/sms', label: 'SMS', icon: MessageSquare, need: 'sms.send' },
 ]
 
 export default function Layout() {
   const { user, signOut } = useAuth()
-  const { settings, loading } = useSettings()
+  const { settings, loading, profile, can, needsUpgrade } = useSettings()
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
 
@@ -70,9 +75,16 @@ export default function Layout() {
     </div>
   )
 
+  const allowed = (item) => !item.need || can(item.need)
+  const sections = SECTIONS
+    .filter((section) => !section.need || can(section.need))
+    .map((section) => ({ ...section, items: section.items.filter(allowed) }))
+    .filter((section) => section.items.length > 0)
+  const quick = QUICK.filter(allowed).slice(0, 4)
+
   const nav = (
     <nav className="space-y-5 px-3 pb-6">
-      {SECTIONS.map((section) => (
+      {sections.map((section) => (
         <div key={section.title}>
           <p className="px-3 pb-1 text-xs font-semibold tracking-wide text-pew-200">{section.title}</p>
           <div className="space-y-0.5">
@@ -105,8 +117,20 @@ export default function Layout() {
         <div className="px-5 py-5">{brand}</div>
         {nav}
         <div className="mt-auto border-t border-pew-700 px-5 py-4">
-          <p className="truncate text-xs text-pew-200">{user?.email}</p>
-          <button onClick={signOut} className="mt-2 flex items-center gap-2 text-sm text-white hover:text-brass-300">
+          <div className="flex items-center gap-2">
+            {profile?.photo_url
+              ? <img src={profile.photo_url} alt="" className="size-8 rounded-full object-cover" />
+              : <span className="grid size-8 place-items-center rounded-full bg-pew-600 text-xs font-semibold text-white">
+                  {(profile?.full_name || user?.email || '?').charAt(0).toUpperCase()}
+                </span>}
+            <div className="min-w-0">
+              <p className="truncate text-sm text-white">{profile?.full_name || user?.email}</p>
+              <p className="truncate text-xs text-brass-300">
+                {profile?.role ?? 'No role'}{profile?.group_name ? ` · ${profile.group_name}` : ''}
+              </p>
+            </div>
+          </div>
+          <button onClick={signOut} className="mt-3 flex items-center gap-2 text-sm text-white hover:text-brass-300">
             <LogOut className="size-4" /> Sign out
           </button>
         </div>
@@ -138,13 +162,22 @@ export default function Layout() {
       )}
 
       <main className="flex-1 px-4 pt-6 pb-28 sm:px-8 lg:pb-10">
-        <div className="mx-auto max-w-6xl" key={location.pathname}>
-          <Outlet />
+        <div className="mx-auto max-w-6xl">
+          {needsUpgrade && (
+            <div className="no-print mb-6 rounded-lg border border-brass-300 bg-brass-100/60 px-4 py-3 text-sm">
+              <strong>Your database is a version behind.</strong> Roles, billing, balances and automatic messages
+              need the latest <code className="rounded bg-white/70 px-1">supabase/schema.sql</code> run in your
+              Supabase SQL editor. Until then everyone keeps full access and the new pages will be empty.
+            </div>
+          )}
+          <div key={location.pathname}>
+            <Outlet />
+          </div>
         </div>
       </main>
 
       <nav className="no-print fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
-        {QUICK.map(({ to, label, icon: Icon, end }) => (
+        {quick.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
             to={to}

@@ -15,23 +15,29 @@ export default function MemberProfile() {
   const [attendance, setAttendance] = useState([])
   const [services, setServices] = useState([])
   const [contributions, setContributions] = useState([])
+  const [balances, setBalances] = useState([])
+  const [bills, setBills] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     async function load() {
       try {
-        const [{ data: m, error: e1 }, att, svc, con] = await Promise.all([
+        const [{ data: m, error: e1 }, att, svc, con, bal, bl] = await Promise.all([
           supabase.from('members').select('*').eq('id', memberId).single(),
           fetchAll(() => supabase.from('attendance').select('service_id, checked_in_at').eq('member_id', memberId).order('id')),
           supabase.from('services').select('id, title, service_date, is_open').order('service_date', { ascending: false }).limit(40),
           fetchAll(() => supabase.from('v_member_contributions').select('*').eq('member_id', memberId).order('contribution_date', { ascending: false }).order('id')),
+          supabase.from('v_member_balances').select('*').eq('member_id', memberId),
+          supabase.from('v_bills').select('*').eq('member_id', memberId).order('bill_date', { ascending: false }).limit(60),
         ])
         if (e1) throw e1
         setMember(m)
         setAttendance(att)
         setServices(svc.data ?? [])
         setContributions(con)
+        setBalances(bal.data ?? [])
+        setBills(bl.data ?? [])
       } catch (e) { setError(e) }
       setLoading(false)
     }
@@ -51,6 +57,8 @@ export default function MemberProfile() {
     return [...map.entries()].sort((a, b) => b[1] - a[1])
   }, [contributions])
   const totalGiven = contributions.reduce((n, c) => n + Number(c.amount), 0)
+  const owing = balances.filter((b) => Number(b.balance) > 0)
+  const totalOwing = owing.reduce((n, b) => n + Number(b.balance), 0)
 
   if (loading) return <Spinner />
   if (error) return <ErrorNote error={error} />
@@ -82,9 +90,13 @@ export default function MemberProfile() {
       <div className="grid gap-6 lg:grid-cols-3">
         <Panel title="Details" className="lg:col-span-2">
           <div className="flex items-start gap-4">
-            <span className="grid size-16 shrink-0 place-items-center rounded-full bg-pew-50 font-display text-2xl text-pew-600">
-              {initials(member.full_name)}
-            </span>
+            {member.photo_url ? (
+              <img src={member.photo_url} alt="" className="size-20 shrink-0 rounded-full border border-slate-200 object-cover" />
+            ) : (
+              <span className="grid size-20 shrink-0 place-items-center rounded-full bg-pew-50 font-display text-2xl text-pew-600">
+                {initials(member.full_name)}
+              </span>
+            )}
             <dl className="grid flex-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
               <Detail label="Phone" value={member.phone} />
               <Detail label="Alternative phone" value={member.phone_alt} />
@@ -133,8 +145,44 @@ export default function MemberProfile() {
               ))}
             </ul>
           </Panel>
+
+          <Panel title="What they owe">
+            <p className={`font-display text-3xl ${totalOwing > 0 ? 'text-absent' : 'text-pew-600'}`}>{money(totalOwing)}</p>
+            <ul className="mt-3 space-y-1.5 text-sm">
+              {balances.map((b) => (
+                <li key={b.contribution_type_id} className="flex justify-between border-b border-slate-100 pb-1.5">
+                  <span>{b.contribution_type}<span className="block text-xs text-slate-500">billed {money(b.billed)} · paid {money(b.paid)}</span></span>
+                  <span className={`font-semibold tabular-nums ${Number(b.balance) > 0 ? 'text-absent' : 'text-pew-600'}`}>{money(b.balance)}</span>
+                </li>
+              ))}
+              {!balances.length && <li className="text-slate-500">Nothing billed to this member yet.</li>}
+            </ul>
+          </Panel>
         </div>
       </div>
+
+      {bills.length > 0 && (
+        <Panel title="Bills raised" className="mt-6">
+          <table className="w-full text-sm">
+            <thead className="text-left text-slate-500">
+              <tr><th className="pb-2">Date</th><th className="pb-2">What for</th><th className="pb-2 text-right">Amount</th><th className="pb-2 text-right">Settled</th><th className="pb-2 text-right">Outstanding</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {bills.map((b) => (
+                <tr key={b.id}>
+                  <td className="py-2 whitespace-nowrap">{formatDate(b.bill_date, { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                  <td className="py-2">{b.run_title}<span className="block text-xs text-slate-500">{b.contribution_type}</span></td>
+                  <td className="py-2 text-right tabular-nums">{money(b.amount)}</td>
+                  <td className="py-2 text-right tabular-nums text-slate-600">{money(b.settled)}</td>
+                  <td className={`py-2 text-right font-semibold tabular-nums ${Number(b.outstanding) > 0 ? 'text-absent' : 'text-pew-600'}`}>
+                    {money(b.outstanding)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+      )}
 
       <Panel title="Payment history" className="mt-6">
         {contributions.length === 0 ? <Empty title="No payments recorded yet" /> : (

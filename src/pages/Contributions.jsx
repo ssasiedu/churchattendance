@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Plus, Download, Trash2, Pencil, Search, Printer } from 'lucide-react'
 import { supabase, fetchAll } from '../lib/supabase'
 import { useSettings } from '../context/SettingsContext'
+import { sendSms, fillTemplate } from '../lib/sms'
 import { downloadCSV, formatDate, matchesSearch, toISODate } from '../lib/utils'
 import { Badge, Button, Empty, ErrorNote, Field, PageHeader, Panel, Select, Spinner, inputClass } from '../components/ui'
 import Modal from '../components/Modal'
@@ -16,6 +17,7 @@ export default function Contributions() {
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
   const [editing, setEditing] = useState(null)
   const [range, setRange] = useState({ from: monthStart(), to: today() })
   const [filters, setFilters] = useState({ type: '', group: '' })
@@ -95,6 +97,7 @@ export default function Contributions() {
         }
       />
       <ErrorNote error={error} />
+      {notice && <div className="no-print mb-4 rounded-lg border border-pew-200 bg-pew-50 px-4 py-3 text-sm text-pew-700">{notice}</div>}
 
       <div className="no-print mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         <input type="date" className={inputClass} value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))} aria-label="From" />
@@ -178,17 +181,20 @@ export default function Contributions() {
         cashAccounts={cashAccounts}
         methods={lookup('payment_method')}
         onClose={() => setEditing(null)}
-        onSaved={() => { setEditing(null); load() }}
+        onSaved={(message) => { setEditing(null); if (message) setNotice(message); load() }}
       />
     </>
   )
 }
 
 function ContributionModal({ entry, members, types, cashAccounts, methods, onClose, onSaved }) {
+  const { settings, money } = useSettings()
   const [form, setForm] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [keepOpen, setKeepOpen] = useState(true)
+  const [alertMember, setAlertMember] = useState(true)
+  const [balance, setBalance] = useState(null)
 
   useEffect(() => {
     if (!entry) return setForm(null)
@@ -203,12 +209,25 @@ function ContributionModal({ entry, members, types, cashAccounts, methods, onClo
       note: entry.note ?? '',
     })
     setError(null)
+    setAlertMember(true)
   }, [entry])
+
+  // Show what the member owes for the type being paid
+  useEffect(() => {
+    if (!form?.member_id || !form?.contribution_type_id) return setBalance(null)
+    let cancelled = false
+    supabase.from('v_member_balances').select('*')
+      .eq('member_id', form.member_id).eq('contribution_type_id', form.contribution_type_id)
+      .maybeSingle()
+      .then(({ data }) => { if (!cancelled) setBalance(data ?? null) })
+    return () => { cancelled = true }
+  }, [form?.member_id, form?.contribution_type_id])
 
   if (!entry || !form) return null
   const isNew = !entry.id
   const type = types.find((t) => t.id === form.contribution_type_id)
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }))
+  const member = members.find((m) => m.id === form.member_id)
 
   async function submit(e) {
     e.preventDefault()
@@ -228,13 +247,48 @@ function ContributionModal({ entry, members, types, cashAccounts, methods, onClo
     const { error } = isNew
       ? await supabase.from('contributions').insert(payload)
       : await supabase.from('contributions').update(payload).eq('id', entry.id)
+    if (error) {
+      setBusy(false)
+      return setError(error)
+    }
+
+    let message = null
+    if (isNew && alertMember && settings?.sms_on_payment && member?.phone) {
+      message = await notifyMember(payload)
+    }
     setBusy(false)
-    if (error) return setError(error)
+
     if (isNew && keepOpen) {
       setForm((f) => ({ ...f, member_id: '', amount: '', reference: '', note: '' }))
+      setBalance(null)
       return
     }
-    onSaved()
+    onSaved(message)
+  }
+
+  /** Texts the member their receipt and their balance after the payment */
+  async function notifyMember(payload) {
+    const { data: fresh } = await supabase.from('v_member_balances').select('*')
+      .eq('member_id', payload.member_id).eq('contribution_type_id', payload.contribution_type_id).maybeSingle()
+
+    const body = fillTemplate(
+      settings.sms_payment_template ?? 'Dear {name}, we have received your {type} of {amount}. Balance: {balance}. - {church}',
+      {
+        type: type?.name ?? 'payment',
+        amount: money(payload.amount),
+        balance: money(fresh?.balance ?? 0),
+        total_paid: money(fresh?.paid ?? payload.amount),
+        date: formatDate(payload.contribution_date, { day: 'numeric', month: 'short', year: 'numeric' }),
+      }
+    )
+    const res = await sendSms({
+      body,
+      audience: 'receipt',
+      audienceLabel: `Payment alert — ${member.full_name}`,
+      recipients: [{ id: member.id, full_name: member.full_name, phone: member.phone }],
+      dial: settings?.country_dial_code,
+    })
+    return res.error ? `Payment saved, but the SMS did not go out: ${typeof res.error === 'string' ? res.error : res.error.message}` : `Payment saved and ${member.full_name} has been sent an SMS.`
   }
 
   return (
@@ -273,6 +327,32 @@ function ContributionModal({ entry, members, types, cashAccounts, methods, onClo
             <input className={inputClass} value={form.note} onChange={set('note')} />
           </Field>
         </div>
+
+        {balance && (
+          <div className="rounded-lg bg-paper px-4 py-3 text-sm sm:col-span-2">
+            <p className="text-xs text-slate-500">{balance.full_name} — {balance.contribution_type}</p>
+            <p className="mt-0.5">
+              Billed {money(balance.billed)} · paid {money(balance.paid)} ·{' '}
+              <strong className={Number(balance.balance) > 0 ? 'text-absent' : 'text-pew-600'}>
+                balance {money(balance.balance)}
+              </strong>
+            </p>
+            {Number(form.amount) > 0 && (
+              <p className="mt-0.5 text-slate-600">
+                After this payment: {money(Number(balance.balance) - Number(form.amount))}
+              </p>
+            )}
+          </div>
+        )}
+
+        {isNew && settings?.sms_on_payment && (
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input type="checkbox" checked={alertMember} onChange={(e) => setAlertMember(e.target.checked)} className="size-4 accent-pew-600" />
+            Text {member?.full_name?.split(' ')[0] ?? 'the member'} a receipt with their balance
+            {!member?.phone && form.member_id && <span className="text-brass-700">(no phone number on file)</span>}
+          </label>
+        )}
+
         {isNew && (
           <label className="flex items-center gap-2 text-sm sm:col-span-2">
             <input type="checkbox" checked={keepOpen} onChange={(e) => setKeepOpen(e.target.checked)} className="size-4 accent-pew-600" />

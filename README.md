@@ -12,19 +12,31 @@ Stack: React + Vite, Tailwind CSS v4, Supabase (Postgres, Auth, Storage, Edge Fu
 - Members scan a QR code at the entrance, find their name and tap **Check in**. No login, no app to install.
 - One permanent entrance QR code that always opens whichever service is currently open.
 - End-of-service report: who was present, who was absent, attendance rate, a breakdown by group, CSV export and a clean printout.
-- Dashboard with monthly trends and a follow-up list of members who have missed the last few services.
+- Dashboard with monthly trends, a follow-up list of members who have missed the last few services, and a membership analytics tab: gender, group, ministry, membership status, age, marital status, how the church has grown, and how complete your records are.
 
 **Members**
-- Full member records: group, phone numbers, email, date of birth, marital status, ministries, membership status, addresses, baptism date, talents, emergency contact.
+- Full member records: photo, group, phone numbers, email, date of birth, marital status, ministries, membership status, addresses, baptism date, talents, emergency contact.
 - **Group is required** on every member and drives reporting, SMS and the dashboard.
 - Member profile page with attendance rate, giving totals and payment history.
 - CSV import and export.
+
+**Billing and balances**
+- Bill welfare to every active member in one batch, monthly or whenever you choose.
+- Raise a special contribution (a building fund, a harvest levy) and every active member is billed for it.
+- Each member's balance is tracked: billed, paid, outstanding — with a defaulters list and a one-tap SMS reminder.
+- Billing posts receivables against the income account, and payments then clear that receivable, so the books stay right.
+
+**Users and roles**
+- Administrator, Finance Manager, Group Leader, Ministry Leader and Usher come ready-made, and you can create your own.
+- An administrator ticks exactly what each role may do, and the database enforces it, not just the menus.
+- A group leader only sees their own group; a ministry leader only their ministry.
 
 **Bulk SMS (Hubtel)**
 - Send to all members, the absentees of a service, the people present at a service, the follow-up list, one group, or numbers you type in.
 - Personalise with `{name}` and `{church}`; live character and SMS-part counter.
 - Credentials are stored in the database and only read on the server, never in the browser.
 - Delivery history with sent and failed counts, plus a test-send button.
+- Automatic messages: a receipt with the member's new balance after every payment, and birthday wishes on the day.
 
 **Accounting**
 - Chart of accounts you control, with live balances.
@@ -63,15 +75,21 @@ You can also import from a spreadsheet inside the app: **Members → Import CSV*
 
 Bulk SMS goes through a small server-side function so your Hubtel credentials never reach anyone's browser.
 
-**From the dashboard:** Supabase → **Edge Functions** → *Deploy a new function* → name it exactly `send-sms` → paste the contents of `supabase/functions/send-sms/index.ts` → Deploy.
+Deploy two functions the same way — Supabase → **Edge Functions** → *Deploy a new function*, name it exactly as below, paste the file, Deploy:
+
+| Function name | File | What it does |
+|---|---|---|
+| `send-sms` | `supabase/functions/send-sms/index.ts` | Bulk messages, payment receipts and birthday wishes |
+| `manage-users` | `supabase/functions/manage-users/index.ts` | Creates and removes logins from the Users page |
 
 **Or with the CLI:**
 
 ```bash
 supabase functions deploy send-sms
+supabase functions deploy manage-users
 ```
 
-Nothing else to configure: the function reads the project URL and keys from the environment Supabase already provides.
+Nothing else to configure: they read the project URL and keys from the environment Supabase already provides.
 
 ### 4. Create your admin account
 
@@ -103,6 +121,10 @@ Sign in and go to **Settings**:
 3. **Groups** — create or rename your groups and set their leaders.
 4. **Payment types** — link Tithe, Welfare and Special Contribution to the income and cash accounts they should hit.
 5. **Dropdowns** — adjust any list in the system: ministries, departments, service types, asset categories and so on.
+6. **Users and roles** — add your finance manager, group leaders and ushers, and tick what each role may do.
+7. **Automatic messages** — turn on payment receipts and birthday wishes, and adjust the wording.
+
+To have birthday wishes go out on their own every morning, generate a secret under **Settings → Automatic messages**, then paste it and your project ref into `supabase/schedule-birthdays.sql` and run that file in the SQL editor. Without it, you still send them with one tap from the Birthdays page.
 
 ---
 
@@ -126,8 +148,13 @@ Every payment you record creates a balanced double entry, so the books are alway
 | You record | Debit | Credit |
 |---|---|---|
 | A tithe of GH₵100 | Cash on Hand | Tithes |
+| Welfare of GH₵20 billed to 300 members | Receivables | Welfare Contributions |
+| A member paying GH₵20 of welfare they were billed | Cash on Hand | Receivables |
+| A welfare payment from someone never billed | Cash on Hand | Welfare Contributions |
 | An expense of GH₵50 for fuel | Transport and Fuel | Cash on Hand |
 | An asset purchase (when you tick *post to accounts*) | the asset account | Cash on Hand |
+
+Income is recognised when the bill is raised, so paying it later settles the debt rather than counting twice. A member's balance is simply everything billed to them minus everything they have paid, and the oldest bill is treated as settled first.
 
 Receivables, payables and corrections go through **Journal entries**, where you choose the accounts yourself. The system will not post an entry whose debits and credits differ.
 
@@ -140,6 +167,8 @@ If a payment type has no accounts linked yet, the payment is still recorded — 
 - Members who check in are anonymous. They can only call two database functions: one that lists names for an open service, and one that marks a person present. They cannot read phone numbers, giving records or anything else.
 - Every table is behind row level security and only users listed in `public.admins` can read or write.
 - SMS credentials are read only by the `send-sms` function running on Supabase's servers, which also verifies that the caller is an administrator.
+- Roles are enforced in the database itself: a group leader's browser cannot read another group's members even if someone changed the code.
+- Creating logins happens in the `manage-users` function on the server, so the admin key never reaches a browser.
 - Never put your `service_role` key in `.env` or anywhere in this app.
 
 ---
@@ -149,14 +178,16 @@ If a payment type has no accounts linked yet, the payment is still recorded — 
 ```
 src/
   pages/        Dashboard, CheckIn, Services, Members, MemberProfile, Reports, Sms,
-                Contributions, Expenses, ChartOfAccounts, Journal, FinanceReports,
-                Assets, Settings, Login
-  components/   Layout, Modal, shared UI primitives
-  context/      AuthContext (session), SettingsContext (church profile, dropdowns, accounts)
-  lib/          supabase client, formatting and CSV helpers
+                Birthdays, Contributions, Billing, Expenses, ChartOfAccounts, Journal,
+                FinanceReports, Assets, Settings, Login
+  components/   Layout, Modal, PhotoUpload, RequirePermission, shared UI primitives
+  context/      AuthContext (session), SettingsContext (church profile, role, dropdowns, accounts)
+  lib/          supabase client, SMS helper, formatting and CSV helpers
 supabase/
-  schema.sql              the whole database, safe to re-run
-  import-members.sql      the 306 real members, run once
-  sample-members.csv      template for the in-app CSV import
-  functions/send-sms/     the bulk SMS function
+  schema.sql                 the whole database, safe to re-run
+  import-members.sql         the 306 real members, run once
+  sample-members.csv         template for the in-app CSV import
+  schedule-birthdays.sql     optional daily birthday job
+  functions/send-sms/        bulk SMS, receipts and birthday wishes
+  functions/manage-users/    creates and removes logins
 ```

@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import { Plus, Search, Upload, Download, Pencil, Trash2, MessageSquare } from 'lucide-react'
 import { supabase, fetchAll } from '../lib/supabase'
 import { useSettings } from '../context/SettingsContext'
-import { downloadCSV, formatDate, matchesSearch, parseCSV, toISODate } from '../lib/utils'
+import { downloadCSV, formatDate, initials, matchesSearch, parseCSV, toISODate } from '../lib/utils'
 import {
   Badge, Button, Empty, ErrorNote, Field, MultiSelect, PageHeader, Select, Spinner, inputClass,
 } from '../components/ui'
 import Modal from '../components/Modal'
+import PhotoUpload from '../components/PhotoUpload'
 
 const EMPTY = {
   full_name: '', member_no: '', group_id: '', phone: '', phone_alt: '', email: '',
@@ -15,11 +16,11 @@ const EMPTY = {
   member_type: 'Member', department: '', ministries: [], communication_prefs: [],
   postal_address: '', location_landmark: '', occupation: '', talents: '',
   joined_on: toISODate(new Date()), baptism_date: '', emergency_name: '', emergency_phone: '',
-  notes: '', is_active: true,
+  notes: '', photo_url: null, is_active: true,
 }
 
 export default function Members() {
-  const { activeGroups, groups, lookup } = useSettings()
+  const { activeGroups, groups, lookup, can } = useSettings()
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -141,15 +142,19 @@ export default function Members() {
         actions={
           <>
             <input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={importFile} />
-            <Button variant="outline" onClick={() => fileRef.current?.click()}>
-              <Upload className="size-4" /> Import CSV
-            </Button>
+            {can('members.manage') && (
+              <Button variant="outline" onClick={() => fileRef.current?.click()}>
+                <Upload className="size-4" /> Import CSV
+              </Button>
+            )}
             <Button variant="outline" onClick={exportCSV}>
               <Download className="size-4" /> Export
             </Button>
-            <Button onClick={() => setEditing(EMPTY)}>
-              <Plus className="size-4" /> Add member
-            </Button>
+            {can('members.manage') && (
+              <Button onClick={() => setEditing(EMPTY)}>
+                <Plus className="size-4" /> Add member
+              </Button>
+            )}
           </>
         }
       />
@@ -193,11 +198,18 @@ export default function Members() {
               {filtered.map((m) => (
                 <tr key={m.id} className="hover:bg-paper/60">
                   <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      {m.photo_url
+                        ? <img src={m.photo_url} alt="" className="size-9 shrink-0 rounded-full object-cover" />
+                        : <span className="grid size-9 shrink-0 place-items-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">{initials(m.full_name)}</span>}
+                      <div className="min-w-0">
                     <Link to={`/members/${m.id}`} className="font-medium text-ink hover:text-pew-600 hover:underline">
                       {m.full_name}
                     </Link>
                     {!m.is_active && <span className="ml-2"><Badge>Inactive</Badge></span>}
                     {m.member_no && <span className="ml-2 text-xs text-slate-400">{m.member_no}</span>}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {m.group_id ? <Badge tone="green">{groupName(m.group_id)}</Badge> : <Badge tone="red">No group</Badge>}
@@ -207,12 +219,16 @@ export default function Members() {
                   <td className="px-4 py-3"><Badge tone="brass">{m.member_type}</Badge></td>
                   <td className="px-4 py-3 text-slate-600">{formatDate(m.joined_on, { day: 'numeric', month: 'short', year: 'numeric' })}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100" onClick={() => setEditing(m)} aria-label={`Edit ${m.full_name}`}>
-                      <Pencil className="size-4" />
-                    </button>
-                    <button className="rounded-md p-1.5 text-absent hover:bg-absent/10" onClick={() => remove(m)} aria-label={`Delete ${m.full_name}`}>
-                      <Trash2 className="size-4" />
-                    </button>
+                    {can('members.manage') && (
+                      <>
+                        <button className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100" onClick={() => setEditing(m)} aria-label={`Edit ${m.full_name}`}>
+                          <Pencil className="size-4" />
+                        </button>
+                        <button className="rounded-md p-1.5 text-absent hover:bg-absent/10" onClick={() => remove(m)} aria-label={`Delete ${m.full_name}`}>
+                          <Trash2 className="size-4" />
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -236,11 +252,13 @@ export default function Members() {
           age_group, membership_status, department, ministries (separated by ;), postal_address, location_landmark, joined_on,
           emergency_name, emergency_phone, is_active.
         </p>
-        <Link to="/sms">
-          <Button variant="outline" size="sm">
-            <MessageSquare className="size-4" /> Send SMS
-          </Button>
-        </Link>
+        {can('sms.send') && (
+          <Link to="/sms">
+            <Button variant="outline" size="sm">
+              <MessageSquare className="size-4" /> Send SMS
+            </Button>
+          </Link>
+        )}
       </div>
 
       <MemberModal
@@ -304,6 +322,7 @@ function MemberModal({ member, groups, onClose, onSaved }) {
       emergency_name: form.emergency_name || null,
       emergency_phone: form.emergency_phone || null,
       notes: form.notes || null,
+      photo_url: form.photo_url || null,
     }
     const { data, error } = isNew
       ? await supabase.from('members').insert(payload).select().single()
@@ -328,6 +347,13 @@ function MemberModal({ member, groups, onClose, onSaved }) {
     >
       <form id="member-form" onSubmit={submit} className="space-y-5">
         <ErrorNote error={error} />
+
+        <PhotoUpload
+          value={form.photo_url}
+          name={form.full_name}
+          onChange={(url) => setForm((f) => ({ ...f, photo_url: url }))}
+          hint="Shown on the member list, their profile and follow-up lists"
+        />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">
